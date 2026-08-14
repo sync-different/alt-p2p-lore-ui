@@ -139,6 +139,59 @@ Two processes on one alt-p2p session id is never legitimate — the session id *
 name, and a REGISTER on an already-paired session recycles the coordinator's slots. `start_tunnel`
 kills a stuck attempt before spawning and reuses a live one.
 
+### Locks are advisory, and the CLI enforces nothing
+
+Established against a live host with two identities, because every one of these is the opposite of
+what the operation's name implies:
+
+- **Anyone can release anyone's lock, and `--force` is not required.** `uitest` released a lock held
+  by `ale` and the CLI simply reported `Lock released on files:`. There is no ownership check to
+  lean on — the entire guard against handing a colleague's work away is `BreakLockDialog`, so the
+  split between "Unlock" (ours) and "Break lock" (theirs) exists only in this app. `--force` is
+  passed on a break anyway, to record the intent at the point the process is spawned.
+- **The printed owner is a display string, not an identity.** One lock, unchanged on the host, has
+  been observed rendering three ways: `Alejandro` in the workspace holding it, `ale` in another
+  workspace on the same machine, and later the raw `u-87c4b8c8b7f44fc1`. Never compare it to decide
+  ownership. `lock query --owner` is resolved server-side and accepts id, username or display name,
+  so ownership is a **second query**, and `FileLock.mine` is `Option<bool>` — unknown stays unknown,
+  and unknown is treated as *someone else's*.
+- **A refused acquire names neither the file nor the holder** — the whole output is `Failed to
+  lock-acquire 1 batch(es) out of 1` plus a source location. `acquire_locks` therefore re-queries on
+  failure and returns holders as `blocked`. Conditional, like every other translation here: unless a
+  requested path is independently found to be held, the original error stands, or an offline host
+  would be reported as a colleague's lock.
+- Re-taking your own lock reports `Lock already owned on files:` — a success that changed nothing,
+  and reported separately so the UI does not claim to have locked what was already yours.
+- `status --scan` says nothing about locks; they are always a separate read, and one that needs a
+  live host. Offline is `Unable to check lock status while offline` → **unknown, never "unlocked"**.
+- **`repoIdentityRef` is a sentence, not an id.** It holds `nameForId`'s output —
+  `"uitest (u-99f5f8484b0a47fd)"` — because it exists to be read in an error message about a
+  sign-in. Sent as `--owner` it matches no account, so every lock the user held came back
+  unattributed and was rendered as a colleague's, complete with an offer to break it. Ownership
+  reads `info.identity`, the raw id from `.lore/config.toml`, which is also correct the instant
+  `info` exists rather than after an effect has run. Same lesson as the owner string one row up,
+  and it caught me anyway: a display string and an identifier must never share a channel.
+
+### The console, and why traces are always recorded
+
+The bottom panel merges two streams: the app's own notices, and one line per `lore` process
+the backend spawns (`lore://command`, emitted from `cmd::run`).
+
+- **Traces are emitted and kept whether or not debug is on.** A diagnostic that only helps
+  people who switched it on *before* things went wrong is not much of a diagnostic; the setting
+  gates display, not recording. Volume is a handful of events per user action, capped at 500.
+- **Redaction happens in Rust, at the point of formatting**, and these strings are now shown on
+  screen rather than only logged — so `redact()` also hides anything *shaped* like a JWT,
+  wherever it appears. Flag-position matching alone would miss a credential passed positionally
+  or behind a flag added later. The shape test is narrow on purpose: a false positive turns a
+  path into `***`, a false negative prints somebody's bearer token.
+- **A failed command shows under Problems** even though the trace stream is otherwise dim — it
+  is a problem, and it is what someone filtering for problems is hunting.
+- The panel is **across the bottom, not down the side**: its lines are long (a command with
+  paths and flags), and a 288px column wrapped every one into four fragments. It replaced the
+  `Activity` pane; that component's tests were ported to `Console.test.tsx` rather than deleted,
+  since they pin the session-labelling fix.
+
 ### Testing traps met here
 
 - **A count of one is not a proof of one.** Every cardinality bug looked correct with one host,
@@ -149,13 +202,19 @@ kills a stuck attempt before spawning and reuses a live one.
   unhandled runner error**. Set implementations per test instead.
 - Fixtures live in `src-tauri/tests/fixtures/`, captured from the real CLI. Regenerate rather than
   hand-edit; a fixture that never existed proves nothing.
+- **Verify you launched what you just built.** A successful `npm run tauri build` is not evidence:
+  the product was renamed, so yesterday's `Alterante Lore.app` sat beside today's `alt-lore
+  Desktop.app` and sorted *first* — `ls | head -1` launched a stale bundle that looked identical.
+  Compare the bundle binary's mtime against the build, not the build log against a success line.
+  (Two rounds of "still yellow" were spent on the same shape of mistake earlier.)
 
 ## Development Status
 
-M1 (shell), M2 (read-only repository browsing) and M3.1–M3.6 are done: tunnels, hosts and
-workspaces, sign-in with a pasted token, expiry warnings, repository discovery, and clone with a
-live progress bar. Next: commit, sync/push, branch switch, locks (M3.7–3.10), then reconnect and
-an end-to-end pass.
+M1 (shell), M2 (read-only repository browsing) and M3.1–M3.10 are done: tunnels, hosts and
+workspaces, sign-in with a pasted token, expiry warnings, repository discovery, clone with a live
+progress bar, commit, sync/push and merge conflicts, branch switch and create, and locks — taking,
+releasing, and breaking someone else's with a confirmation that names them. Next: reconnect and an
+end-to-end pass (M3.11–3.12).
 
 Deferred and known: the app knows nothing about **links**, which cross access boundaries — a
 `Not authorized` naming an unfamiliar resource id will be one, and ARCHITECTURE.md says why.

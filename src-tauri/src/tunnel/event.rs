@@ -93,6 +93,15 @@ pub enum TunnelEvent {
         url: String,
         port: u16,
         mode: TunnelMode,
+        /// The address the peer was actually reached at — what tells a link over the local
+        /// network from a punch through NAT.
+        ///
+        /// Optional by design, and in two different ways: a relayed connection has no peer
+        /// address to report (the socket is connected to the coordinator), and a jar older
+        /// than this field simply never sends it. Both must degrade to "direct, route
+        /// unknown" rather than to a wrong claim.
+        #[serde(default)]
+        peer: Option<String>,
     },
     Error {
         message: String,
@@ -132,7 +141,7 @@ mod tests {
         )
         .unwrap();
         match e {
-            TunnelEvent::TunnelReady { url, port, mode } => {
+            TunnelEvent::TunnelReady { url, port, mode, .. } => {
                 assert_eq!(url, "grpc://127.0.0.1:41500");
                 assert_eq!(port, 41500);
                 assert_eq!(mode, TunnelMode::Direct);

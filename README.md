@@ -22,9 +22,14 @@ tunnel it can use to carry it. You install one app; there is nothing else to set
 - **Clone** — pick a repository by name from what your identity is granted, choose who it acts
   as, and watch a real progress bar.
 - **Browse** — files, changes, diffs and locks for the open workspace.
-
-Repository *writing* — commit, sync, push, branch switching, taking locks — is in progress; see
-[CLAUDE.md](CLAUDE.md) for status.
+- **Work** — stage and commit, sync and push, resolve merge conflicts, switch and create branches.
+- **Console** — a feed across the bottom of what happened, colour-coded and in a fixed-width
+  font. Switch on debug messages in Settings to see every `lore` command the app runs, how long
+  it took and how it ended — which is what turns "it didn't work" into a report someone can act
+  on. Keys and tokens are replaced with `***` before anything is shown.
+- **Locks** — take one, give it back, and see who holds the rest. Breaking someone else's is a
+  separate, deliberate action that names them: Lore itself applies no ownership check at all, so
+  the only thing between a mis-click and a colleague's lost afternoon is that confirmation.
 
 ## Install
 

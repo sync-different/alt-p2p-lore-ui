@@ -100,6 +100,65 @@ struct Emitted<'a> {
     session_name: String,
 }
 
+/// One raw line from a tunnel process, for the debug console.
+///
+/// The supervisor parses stdout into typed events and keeps a bounded stderr tail for the exit
+/// message; everything else was discarded. That is fine until a connection fails in a way none
+/// of the recognisers know about, at which point the app's summary is all that is left and the
+/// jar's own account of what it tried — coordinator, punch, relay — is gone. This forwards it.
+#[derive(Serialize, Clone)]
+pub struct TunnelOutput {
+    pub session_id: String,
+    pub session_name: String,
+    /// `out` or `err`. Java logs progress to stderr, so this is not a severity.
+    pub stream: &'static str,
+    /// `info` | `warn` | `error`, read from the line itself.
+    pub level: &'static str,
+    pub line: String,
+}
+
+pub const OUTPUT_EVENT: &str = "tunnel://output";
+
+/// Severity of a log line, by what the tunnel's own logger wrote.
+///
+/// Read from content rather than from the stream, because Java logs everything to stderr —
+/// treating that as failure would paint an ordinary connection red.
+pub fn line_level(line: &str) -> &'static str {
+    if line.contains("ERROR") || line.contains("SEVERE") || line.contains("Exception") {
+        "error"
+    } else if line.contains("WARN") {
+        "warn"
+    } else {
+        "info"
+    }
+}
+
+/// Forward one line, scrubbed.
+///
+/// `redact` is applied even though these are the jar's own logs and not our argument vector:
+/// this text is now *displayed*, and a program that logs its own command line — or a future
+/// version that does — must not be the reason a session key ends up on screen.
+fn emit_output(app: &AppHandle, id: &str, stream: &'static str, line: &str) {
+    let (session_id, session_name) = app
+        .state::<Registry>()
+        .get(id)
+        .map(|i| (i.session_id, i.session_name))
+        .unwrap_or_default();
+    let scrubbed = crate::lore::cmd::redact(
+        &line.split_whitespace().map(|s| s.to_string()).collect::<Vec<_>>(),
+    );
+    let _ = app.emit(
+        OUTPUT_EVENT,
+        TunnelOutput {
+            session_id,
+            session_name,
+            stream,
+            level: line_level(line),
+            line: scrubbed,
+        },
+    );
+}
+
 fn emit(app: &AppHandle, update: TunnelUpdate) {
     let (session_id, session_name) = app
         .state::<Registry>()
@@ -157,12 +216,14 @@ pub async fn start_tunnel(app: AppHandle, config: TunnelConfig) -> Result<String
     // Check the port here rather than letting the child discover it, because the child finds
     // out only *after* it has connected — it binds the listener last — so the failure lands
     // a minute late and looks like a connection problem rather than a local one.
-    if let Err(e) = std::net::TcpListener::bind(("127.0.0.1", config.loreserver_port)) {
-        return Err(format!(
-            "Local port {} is not available ({e}). Another program on this machine is using \
-             it — close it, or give this session a different local port.",
-            config.loreserver_port
-        ));
+    check_local_port(config.loreserver_port, PortRole::Loreserver)?;
+    // The identity port needs the same check, and for a sharper reason: the registry test
+    // above only sees *this app's* tunnels, so anything else on the machine holding it —
+    // an ssh forward to the same host is the case that found this — got past both guards.
+    // The tunnel then connected, failed to bind, and exited, which reads as "the connection
+    // to the host ended" a minute later.
+    if let Some(port) = config.identity_port {
+        check_local_port(port, PortRole::Identity)?;
     }
 
     let jar = app
@@ -247,6 +308,9 @@ pub async fn start_tunnel(app: AppHandle, config: TunnelConfig) -> Result<String
                 CommandEvent::Stdout(bytes) => {
                     let line = String::from_utf8_lossy(&bytes);
                     for l in line.lines() {
+                        if !l.trim().is_empty() {
+                            emit_output(&app_for_task, &id_for_task, "out", l.trim());
+                        }
                         if let Some(parsed) = parse_line(l) {
                             if matches!(parsed, TunnelEvent::Error { .. }) {
                                 saw_json_error = true;
@@ -265,6 +329,7 @@ pub async fn start_tunnel(app: AppHandle, config: TunnelConfig) -> Result<String
                         if line.contains("ERROR") || line.contains("WARN") {
                             eprintln!("tunnel {id_for_task}: {line}");
                         }
+                        emit_output(&app_for_task, &id_for_task, "err", line);
                         // A bounded tail: enough to explain a failure, small enough that a
                         // chatty tunnel running for hours cannot grow this without limit.
                         recent_stderr.push(line.to_string());
@@ -284,7 +349,12 @@ pub async fn start_tunnel(app: AppHandle, config: TunnelConfig) -> Result<String
                     // user needs to know: everything that depends on the tunnel — diffs,
                     // locks, push — silently stops working otherwise.
                     let reason = if was_connected {
-                        "The connection to the host ended.".to_string()
+                        // Say *what ended it* where the tunnel gave a reason. On its own this
+                        // sentence describes the symptom the user has already noticed and
+                        // nothing else; it was reported as unactionable for exactly that
+                        // reason. The detail is appended, never substituted, because the first
+                        // clause is the part a non-technical reader needs.
+                        ended_reason(payload.code, &recent_stderr)
                     } else if saw_json_error {
                         // The error event already said why, and it said it better.
                         registry
@@ -353,7 +423,7 @@ fn handle_event(app: &AppHandle, id: &str, event: TunnelEvent) {
                 },
             );
         }
-        TunnelEvent::TunnelReady { url, port: _, mode } => {
+        TunnelEvent::TunnelReady { url, port: _, mode, peer } => {
             registry.set_ready(id, &url, mode.clone());
             emit(
                 app,
@@ -361,13 +431,7 @@ fn handle_event(app: &AppHandle, id: &str, event: TunnelEvent) {
                     kind: UpdateKind::Ready,
                     id: id.into(),
                     phase: TunnelPhase::Connected,
-                    detail: match mode {
-                        TunnelMode::Relay => {
-                            "Connected through the relay — slower than a direct connection."
-                                .to_string()
-                        }
-                        _ => "Connected".to_string(),
-                    },
+                    detail: describe_route(&mode, peer.as_deref()),
                     mode: Some(mode),
                     url: Some(url),
                     error: None,
@@ -397,6 +461,145 @@ fn handle_event(app: &AppHandle, id: &str, event: TunnelEvent) {
 ///
 /// The common causes have recognisable signatures, and naming them saves the user reading a
 /// Java stack trace to discover that a port is busy.
+/// How the connection was actually made, in a sentence.
+///
+/// "Connected" is three different outcomes wearing one word, and they perform nothing alike:
+///
+/// - **over the local network** — the peer is on this LAN, so the punch never left it. The
+///   fastest route by a wide margin (118 MB/s against 19 MB/s on the same 2 GiB repository).
+/// - **hole punched through NAT** — a genuine peer-to-peer link across the internet, which is
+///   the thing alt-p2p exists to do.
+/// - **through the relay** — working, but every byte goes via the coordinator.
+///
+/// The distinction is drawn from the peer's *address*, not from a claim the tunnel makes: a
+/// private address means the far side is on this network. Absent — a relayed connection, or a
+/// jar too old to report it — it degrades to plain "directly" rather than guessing.
+pub fn describe_route(mode: &TunnelMode, peer: Option<&str>) -> String {
+    if *mode == TunnelMode::Relay {
+        return "Connected through the relay — slower than a direct connection.".to_string();
+    }
+    match peer.and_then(host_of) {
+        Some(host) if is_local_network(&host) => {
+            format!("Connected directly over the local network ({host}).")
+        }
+        Some(host) => format!("Connected directly, hole punched through NAT ({host})."),
+        // Older jars send no peer address at all, so silence must not become a claim.
+        None => "Connected directly.".to_string(),
+    }
+}
+
+/// The host part of `addr:port`, tolerating IPv6's own colons.
+fn host_of(peer: &str) -> Option<String> {
+    let peer = peer.trim();
+    if peer.is_empty() {
+        return None;
+    }
+    // `[::1]:41234`
+    if let Some(rest) = peer.strip_prefix('[') {
+        return rest.split(']').next().map(|s| s.to_string());
+    }
+    // A bare IPv6 literal has several colons and no port; only split when there is exactly one.
+    match peer.matches(':').count() {
+        0 => Some(peer.to_string()),
+        1 => peer.rsplit_once(':').map(|(h, _)| h.to_string()),
+        _ => Some(peer.to_string()),
+    }
+}
+
+/// Is this address on the local network rather than out on the internet?
+pub fn is_local_network(host: &str) -> bool {
+    // Strip a zone id (`fe80::1%en0`), which is not part of the address.
+    let host = host.split('%').next().unwrap_or(host);
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(v4)) => {
+            v4.is_private() || v4.is_loopback() || v4.is_link_local()
+        }
+        Ok(std::net::IpAddr::V6(v6)) => {
+            let s = v6.segments();
+            // Unique-local (fc00::/7) and link-local (fe80::/10); both are unstable in std,
+            // so they are spelled out rather than waiting for the API.
+            v6.is_loopback() || (s[0] & 0xfe00) == 0xfc00 || (s[0] & 0xffc0) == 0xfe80
+        }
+        // Not an address at all — a hostname, or something unexpected. Claiming either way
+        // would be a guess.
+        Err(_) => false,
+    }
+}
+
+/// Which local listener a port is for. They fail the same way and are fixed differently.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PortRole {
+    Loreserver,
+    Identity,
+}
+
+/// Refuse a port that is already taken, before spending a process on it.
+///
+/// The child binds its listeners **last**, after connecting, so a busy port surfaces a minute
+/// late and looks like a connection failure rather than a local one. Checking here turns that
+/// into an immediate, specific refusal.
+///
+/// The two roles need different advice. A busy *loreserver* port is a free choice — any spare
+/// port works. A busy *identity* port is not: the host's loreserver advertises its `auth_url`
+/// (`[environment.endpoint].auth_url`), `lore` files tokens under that exact URL, and the port
+/// is part of it. Telling someone to "pick another port" there sends them to invalidate their
+/// own sign-in.
+pub fn check_local_port(port: u16, role: PortRole) -> Result<(), String> {
+    let Err(e) = std::net::TcpListener::bind(("127.0.0.1", port)) else {
+        return Ok(());
+    };
+    Err(match role {
+        PortRole::Loreserver => format!(
+            "Local port {port} is not available ({e}). Another program on this machine is \
+             using it — close it, or give this session a different local port."
+        ),
+        PortRole::Identity => format!(
+            "Identity port {port} is already in use by another program on this machine ({e}). \
+             This one cannot simply be changed: the host publishes it as its sign-in address \
+             and your saved sign-in is filed under it. Close whatever is holding it — an ssh \
+             forward to the same host will do this — and connect again."
+        ),
+    })
+}
+
+/// Why a *connected* tunnel ended.
+///
+/// "The connection to the host ended." is true, and by itself it is only the symptom the user
+/// has already noticed — it was reported from testing as giving nothing to act on. Where the
+/// tunnel said something recognisable, that is added; where it said something unrecognised,
+/// its own last line is added; where it said nothing at all, the exit code at least
+/// distinguishes a crash from a clean stop.
+///
+/// The opening sentence never changes, so the plain-language headline survives whatever
+/// diagnostic follows it.
+pub fn ended_reason(code: Option<i32>, stderr_tail: &[String]) -> String {
+    const HEAD: &str = "The connection to the host ended.";
+
+    // A known cause is worth more than any amount of raw log, and `explain_exit` already
+    // recognises the ones that recur.
+    if let Some(c) = code {
+        let explained = explain_exit(c, stderr_tail);
+        if !explained.starts_with("The connection program stopped unexpectedly") {
+            return format!("{HEAD} {explained}");
+        }
+    }
+
+    let last: Option<&String> = stderr_tail
+        .iter()
+        .rev()
+        .find(|l| l.contains("ERROR") || l.contains("WARN") || l.contains("Exception"));
+    let last = last.or_else(|| stderr_tail.last());
+
+    match (last, code) {
+        (Some(l), _) => format!("{HEAD} It last reported: {l}"),
+        (None, Some(c)) if c != 0 => {
+            format!("{HEAD} The connection program exited with code {c} and reported nothing.")
+        }
+        // Turn on debug messages in Settings and the tunnel's own output is in the console.
+        _ => format!("{HEAD} It reported nothing — switch on debug messages to see its output."),
+    }
+}
+
 pub fn explain_exit(code: i32, stderr_tail: &[String]) -> String {
     let joined = stderr_tail.join("\n");
     let lower = joined.to_lowercase();

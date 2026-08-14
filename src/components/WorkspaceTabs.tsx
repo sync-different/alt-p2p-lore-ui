@@ -57,10 +57,11 @@ export function WorkspaceTabs({
   onClone: () => void;
 }) {
   return (
-    <div className="flex shrink-0 items-center gap-1 border-b border-line bg-surface-0 px-2">
+    <div className="flex shrink-0 items-center gap-1 border-b border-line bg-surface-0 px-3">
       {/* Labelled to match the Hosts row above it, so the two strips read as a pair: what you
-          can reach, and what you are working in. */}
-      <span className="shrink-0 pr-1 text-[11px] uppercase tracking-wide text-ink-2">Repos</span>
+          can reach, and what you are working in. The row's own padding matches too (px-3), or
+          the two labels start four pixels apart and the rows look misaligned. */}
+      <span className="shrink-0 pr-2 text-[11px] uppercase tracking-wide text-ink-2">Repos</span>
       {workspaces.length === 0 && (
         <span className="px-1 py-2 text-ink-2">
           No workspaces yet — clone one from a host, or open a folder you cloned earlier.

@@ -79,6 +79,11 @@ otherwise-odd choices. Each was verified against a live host.
 4. **One tunnel per host.** The identity port binds once, so two configured P2P sessions to one
    host can never both be connected. A direct host has no such limit — there is nothing to
    bind.
+5. **A lock is shared state, and nothing enforces who owns it.** Releasing another person's lock
+   succeeds, without `--force`. The owner as printed is a display name that renders differently
+   depending on which workspace asks, so ownership is resolved by the server rather than compared
+   locally — and where it cannot be established it stays *unknown*, which is treated as somebody
+   else's.
 
 Consequently:
 

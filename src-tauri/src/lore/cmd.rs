@@ -13,7 +13,7 @@
 use serde::Serialize;
 use std::path::Path;
 use std::time::Duration;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 use tauri_plugin_shell::ShellExt;
 
 /// Default ceiling for a repository command.
@@ -91,9 +91,30 @@ pub fn redact(args: &[String]) -> String {
                 continue;
             }
         }
+        // A credential that arrives somewhere this list does not expect — positionally, or
+        // behind a flag added later — is still a credential. Since these strings are now
+        // *displayed*, in the debug console, shape is checked as well as position.
+        if looks_like_a_token(a) {
+            out.push("***".into());
+            continue;
+        }
         out.push(a.clone());
     }
     out.join(" ")
+}
+
+/// Does this argument look like a JWT?
+///
+/// Three dot-separated segments of base64url, the middle one long enough to be a payload.
+/// Deliberately narrow: a false positive replaces a path with `***` in a diagnostic tool,
+/// which is annoying, while a false negative prints somebody's bearer token on screen.
+fn looks_like_a_token(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('.').collect();
+    parts.len() == 3
+        && parts[1].len() >= 20
+        && parts.iter().all(|p| {
+            !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        })
 }
 
 /// Run `lore` in `cwd` and return its output.
@@ -107,32 +128,91 @@ pub async fn run(
     timeout: Option<Duration>,
 ) -> Result<LoreOutput, LoreError> {
     let pretty = redact(&args);
+    let started = std::time::Instant::now();
 
     let cmd = app
         .shell()
         .sidecar("lore")
-        .map_err(|e| LoreError::NotFound(e.to_string()))?
+        .map_err(|e| {
+            let e = LoreError::NotFound(e.to_string());
+            trace(app, &pretty, cwd, started, None, Some(&e.to_string()));
+            e
+        })?
         .current_dir(cwd.to_path_buf())
         .args(args);
 
     let limit = timeout.unwrap_or(DEFAULT_TIMEOUT);
-    let output = tokio::time::timeout(limit, cmd.output())
-        .await
-        .map_err(|_| LoreError::TimedOut { seconds: limit.as_secs(), command: pretty.clone() })?
-        .map_err(|e| LoreError::Spawn(e.to_string()))?;
+    let output = match tokio::time::timeout(limit, cmd.output()).await {
+        Err(_) => {
+            let e = LoreError::TimedOut { seconds: limit.as_secs(), command: pretty.clone() };
+            trace(app, &pretty, cwd, started, None, Some(&e.to_string()));
+            return Err(e);
+        }
+        Ok(Err(e)) => {
+            let e = LoreError::Spawn(e.to_string());
+            trace(app, &pretty, cwd, started, None, Some(&e.to_string()));
+            return Err(e);
+        }
+        Ok(Ok(o)) => o,
+    };
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let code = output.status.code();
 
     if !output.status.success() {
-        return Err(LoreError::Failed {
-            code: output.status.code(),
-            stderr,
-            command: pretty,
-        });
+        trace(app, &pretty, cwd, started, code, Some(stderr.trim()));
+        return Err(LoreError::Failed { code, stderr, command: pretty });
     }
 
-    Ok(LoreOutput { stdout, stderr, code: output.status.code(), success: true })
+    trace(app, &pretty, cwd, started, code, None);
+    Ok(LoreOutput { stdout, stderr, code, success: true })
+}
+
+/// One line for the debug console: what ran, where, how long it took, and how it ended.
+#[derive(Serialize, Clone, Debug)]
+pub struct LoreTrace {
+    /// Already redacted — this is the string that reaches the screen.
+    pub command: String,
+    pub cwd: String,
+    pub ms: u64,
+    pub code: Option<i32>,
+    pub ok: bool,
+    /// Why it failed, trimmed. Absent on success.
+    pub error: Option<String>,
+}
+
+/// The event name the console listens on.
+pub const TRACE_EVENT: &str = "lore://command";
+
+/// Emit a trace, always.
+///
+/// Not gated on a debug setting: the console's value is being able to turn it on *after*
+/// something went wrong and still see what led there. The volume is a handful of events per
+/// user action, so the cost of always emitting is far below the cost of a switch that only
+/// helps people who predicted they would need it.
+///
+/// Failures to emit are ignored. A diagnostic that can break the operation it is describing
+/// is worse than no diagnostic.
+fn trace(
+    app: &AppHandle,
+    command: &str,
+    cwd: &Path,
+    started: std::time::Instant,
+    code: Option<i32>,
+    error: Option<&str>,
+) {
+    let payload = LoreTrace {
+        command: command.to_string(),
+        cwd: cwd.display().to_string(),
+        ms: started.elapsed().as_millis() as u64,
+        code,
+        ok: error.is_none(),
+        // A whole stderr dump would drown the console; the first line is the message and the
+        // rest is a source-location trace that belongs in the error the caller already shows.
+        error: error.map(|e| e.lines().next().unwrap_or(e).trim().to_string()),
+    };
+    let _ = app.emit(TRACE_EVENT, payload);
 }
 
 #[cfg(test)]
@@ -162,6 +242,27 @@ mod tests {
     #[test]
     fn a_trailing_secret_flag_does_not_panic() {
         assert_eq!(redact(&v(&["connect", "--psk"])), "connect --psk");
+    }
+
+    #[test]
+    fn hides_a_token_by_shape_wherever_it_appears() {
+        // These strings are now *displayed*, in the debug console. A credential passed
+        // positionally, or behind a flag nobody added to the list, would otherwise be printed
+        // on screen — and a secret only has to be shown once.
+        let jwt = "eyJhbGciOiJFUzI1NiJ9.eyJzdWIiOiJ1LTg3YzRiOGM4YjdmNDRmYzEifQ.c2ln";
+        assert_eq!(redact(&v(&["auth", "login", jwt])), "auth login ***");
+    }
+
+    #[test]
+    fn does_not_mistake_an_ordinary_argument_for_a_token() {
+        // A false positive turns a path into *** in a diagnostic tool, so the shape test is
+        // deliberately narrow: three segments, and a payload long enough to be one.
+        assert_eq!(redact(&v(&["status", "a.b.c"])), "status a.b.c");
+        assert_eq!(
+            redact(&v(&["clone", "grpc://127.0.0.1:41337"])),
+            "clone grpc://127.0.0.1:41337"
+        );
+        assert_eq!(redact(&v(&["diff", "Art/Rig.v2.uasset"])), "diff Art/Rig.v2.uasset");
     }
 
     #[test]

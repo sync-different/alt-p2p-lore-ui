@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Prerequisites } from "./components/Prerequisites";
 import { RepoPanel } from "./components/RepoPanel";
@@ -11,11 +11,14 @@ import { DiscardDialog } from "./components/DiscardDialog";
 import { SwitchBlockedDialog } from "./components/SwitchBlockedDialog";
 import { NewBranchDialog } from "./components/NewBranchDialog";
 import { WorkspaceTabs } from "./components/WorkspaceTabs";
-import { Activity } from "./components/Activity";
+import { Console } from "./components/Console";
+import { SettingsDialog } from "./components/SettingsDialog";
 import { Actions } from "./components/Actions";
 import { Dropdown } from "./components/Dropdown";
 import { useRepository } from "./hooks/useRepository";
 import { useNotices } from "./hooks/useNotices";
+import { useLoreTrace } from "./hooks/useLoreTrace";
+import { loadSettings, saveSettings, type Settings } from "./lib/settings";
 import { SessionForm } from "./components/SessionForm";
 import { useTunnels, phaseToStatus } from "./hooks/useTunnels";
 import { useAuth } from "./hooks/useAuth";
@@ -33,7 +36,7 @@ import {
   type WorkspaceSummary,
 } from "./lib/workspaces";
 import { reachability } from "./lib/reachability";
-import { identitiesAt, nameForId } from "./lib/auth";
+import { accountsAt, identitiesAt, nameForId } from "./lib/auth";
 import { hostAuthUrl, hostBaseUrl, hostServes } from "./lib/sessions";
 
 /**
@@ -83,7 +86,16 @@ export default function App() {
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
 
-  const { notices, push } = useNotices();
+  const { notices, push, clear: clearNotices } = useNotices();
+  // Every `lore` process the backend spawns. Recorded whether or not debug is on, so that
+  // switching it on after a failure still shows what led there.
+  const { traces, tunnel: tunnelOutput, clear: clearTraces } = useLoreTrace();
+  const [settings, setSettings] = useState<Settings>(() => loadSettings());
+  const [showSettings, setShowSettings] = useState(false);
+  const updateSettings = useCallback((next: Settings) => {
+    setSettings(next);
+    saveSettings(next);
+  }, []);
   // A stable callback: the hook depends on it, and a new identity each render would make
   // its effects re-subscribe on every keystroke elsewhere in the tree.
   const onEvent = useCallback(
@@ -264,10 +276,35 @@ export default function App() {
       : null;
   useEffect(() => repo.setSignedInAs(soleIdentity), [repo, soleIdentity]);
   // Named where we can: "u-87c4…" alone tells the user nothing about who to sign in as.
+  // This is a *sentence*, not an identifier — see setKnownIdentities below, and the note in
+  // useRepository: passing it where an id was wanted made every lock of ours look foreign.
   const pinned = repo.info?.identity
     ? nameForId(repo.info.identity, auth.status?.all ?? [])
     : null;
   useEffect(() => repo.setRepoIdentity(pinned), [repo, pinned]);
+
+  // The accounts signed in at **the open repository's own host**, as {id, name} — so a lock
+  // held by u-87c4… is shown as "ale", the name used everywhere else, rather than whichever
+  // of "Alejandro", "ale" or the raw id the host happened to render this time.
+  //
+  // Keyed on the repository's host, not on the host selected in the bar. Those differ
+  // routinely — a repository is served by whichever host owns its URL, whatever is on screen
+  // — and the wrong one sends another host's user ids to a server that never heard of them.
+  // Against a host with **no** identity provider that is not merely useless, it is an error
+  // per refresh: `Failed to resolve user id from user name: No authentication configured on
+  // server`. `accountsAt` returns nothing for a host with no auth URL, so nothing is asked.
+  const repoHost = repo.info?.remote_url
+    ? saved.find((h) => hostServes(h, repo.info?.remote_url))
+    : undefined;
+  const repoAuthUrl = repoHost ? hostAuthUrl(repoHost) : null;
+  const knownIdentities = useMemo(
+    () => accountsAt(auth.status?.all ?? [], repoAuthUrl),
+    [auth.status?.all, repoAuthUrl],
+  );
+  useEffect(() => repo.setKnownIdentities(knownIdentities), [repo, knownIdentities]);
+  // A host with no identity provider cannot answer "whose lock is this?" at all, whatever the
+  // working copy happens to be pinned to.
+  useEffect(() => repo.setCanAttribute(repoAuthUrl != null), [repo, repoAuthUrl]);
 
   const connectHost = async (h: SessionConfig) => {
     try {
@@ -286,7 +323,8 @@ export default function App() {
     await tunnels.stop(t.id);
     push("info", `Disconnected from “${h.name}”.`, h.name);
   };
-  const problems = notices.filter((n) => n.level === "warn" || n.level === "error").length;
+  // The problem count moved into the console's own Problems tab, which counts failed
+  // commands too — a distinction the old badge could not make.
 
 
   /**
@@ -412,6 +450,16 @@ export default function App() {
             void hasPsk(activeConfig.id).then((k) => setEditing({ ...activeConfig, hasKey: k }))
           }
         />
+        {/* App settings, as opposed to the per-host gear beside each name. Top right, the
+            corner this kind of thing is looked for in. */}
+        <button
+          onClick={() => setShowSettings(true)}
+          aria-label="Settings"
+          title="Settings"
+          className="rounded px-1 text-[15px] leading-none text-ink-2 hover:bg-surface-3 hover:text-ink-0"
+        >
+          ⚙
+        </button>
       </HostBar>
 
       <WorkspaceTabs
@@ -519,6 +567,10 @@ export default function App() {
         </div>
       )}
 
+      {/* Files and content side by side; the console across the full width beneath them.
+          Its lines are long — commands with paths and flags, sentences explaining a failure —
+          and in the old right-hand column every one of them wrapped into four fragments. The
+          two panels that wanted height were the ones paying for a width they never used. */}
       <div className="flex min-h-0 flex-1">
         <div className="flex w-72 shrink-0 flex-col border-r border-line bg-surface-1">
           <Pane title="Files" className="flex-1">
@@ -541,21 +593,27 @@ export default function App() {
             </div>
           )}
         </Pane>
-
-        <Pane
-          title="Activity"
-          className="w-72 shrink-0 border-l border-line bg-surface-1"
-          actions={
-            problems > 0 ? (
-              <span className="ml-auto rounded bg-danger/15 px-1.5 py-0.5 text-[11px] text-danger">
-                {problems}
-              </span>
-            ) : null
-          }
-        >
-          <Activity notices={notices} />
-        </Pane>
       </div>
+
+      <Console
+        notices={notices}
+        traces={traces}
+        tunnel={tunnelOutput}
+        debugEnabled={settings.debug}
+        onClear={() => {
+          clearNotices();
+          clearTraces();
+        }}
+        onOpenSettings={() => setShowSettings(true)}
+      />
+
+      {showSettings && (
+        <SettingsDialog
+          settings={settings}
+          onChange={updateSettings}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
 
       {signingIn && activeConfig && activeAuthUrl && (
         <SignInDialog
