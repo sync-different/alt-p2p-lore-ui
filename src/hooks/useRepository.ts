@@ -5,8 +5,12 @@ import {
   listLocks,
   lockIndex,
   openRepo,
+  abortMerge,
+  pushRepo,
   repoStatus,
+  resolveConflicts,
   stagePaths,
+  syncRepo,
   unstagePaths,
   type ChangeKind,
   type DirEntry,
@@ -324,6 +328,45 @@ export function useRepository(onEvent?: OnEvent) {
     [info, onEvent],
   );
 
+  /**
+   * Sync and push, and the merge operations that go with them.
+   *
+   * Each returns the status the command already read, so the panel never shows a moment where
+   * the buttons disagree with what just happened.
+   */
+  const runRemote = useCallback(
+    async (fn: (path: string) => Promise<RepoStatus>, verb: string) => {
+      if (!info) return;
+      setStaging(true);
+      try {
+        const status = await fn(info.path);
+        setInfo((prev) => (prev ? { ...prev, status } : prev));
+        if (status.pending_merge && status.conflicts.length > 0) {
+          onEvent?.(
+            "warn",
+            `${verb} left ${status.conflicts.length} file${status.conflicts.length === 1 ? "" : "s"} in conflict.`,
+          );
+        } else {
+          onEvent?.("success", `${verb} finished.`);
+        }
+      } catch (e) {
+        onEvent?.("error", explainError(String(e), signedInAsRef.current, repoIdentityRef.current).message);
+      } finally {
+        setStaging(false);
+      }
+    },
+    [info, onEvent],
+  );
+
+  const sync = useCallback(() => runRemote(syncRepo, "Sync"), [runRemote]);
+  const push = useCallback(() => runRemote(pushRepo, "Push"), [runRemote]);
+  const abort = useCallback(() => runRemote(abortMerge, "Merge abandoned —"), [runRemote]);
+  const resolve = useCallback(
+    (paths: string[], takeMine: boolean) =>
+      runRemote((path) => resolveConflicts(path, paths, takeMine), takeMine ? "Kept your version —" : "Took the host's version —"),
+    [runRemote],
+  );
+
   const stage = useCallback(
     (paths: string[]) => applyStaging(paths, stagePaths, "Staged"),
     [applyStaging],
@@ -344,6 +387,10 @@ export function useRepository(onEvent?: OnEvent) {
 
   return {
     adoptStatus,
+    sync,
+    push,
+    abort,
+    resolve,
     stage,
     unstage,
     staging,

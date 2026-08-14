@@ -22,12 +22,20 @@ export interface ChangeEntry {
   path: string;
 }
 
+/** Where the local branch stands against the remote, in lore's own words. */
+export type BranchStanding = "unknown" | "in_sync" | "ahead" | "behind" | "diverged";
+
 export interface RepoStatus {
   repo_id: string | null;
   branch: string | null;
   revision: number | null;
   revision_hash: string | null;
   changes: ChangeEntry[];
+  standing: BranchStanding;
+  /** A merge is open: `sync` started one and it has not been committed. */
+  pending_merge: boolean;
+  /** Files lore refuses to commit until resolved. Editing them by hand does not clear this. */
+  conflicts: string[];
 }
 
 export interface Branches {
@@ -170,3 +178,9 @@ export const stagePaths = (path: string, paths: string[]) =>
 /** Take paths back out of the next commit. Files on disk are untouched. */
 export const unstagePaths = (path: string, paths: string[]) =>
   invoke<RepoStatus>("unstage_paths", { path, paths });
+
+export const syncRepo = (path: string) => invoke<RepoStatus>("sync", { path });
+export const pushRepo = (path: string) => invoke<RepoStatus>("push", { path });
+export const resolveConflicts = (path: string, paths: string[], takeMine: boolean) =>
+  invoke<RepoStatus>("resolve_conflicts", { path, paths, takeMine });
+export const abortMerge = (path: string) => invoke<RepoStatus>("abort_merge", { path });

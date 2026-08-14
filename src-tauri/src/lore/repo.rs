@@ -237,10 +237,16 @@ pub fn port_of(url: &str) -> Option<u16> {
 /// and 83ms warm, so there is no reason to defer it to a special "deep refresh" the user has
 /// to know about.
 ///
-/// `--offline` stays: reading state must not depend on a host being reachable, and discovery
-/// is entirely local.
+/// **`--offline` is deliberately absent.** It suppresses the two lines that say where the
+/// branch stands — "Remote revision …" and "Local branch is ahead of remote" — so with it the
+/// app could never know a push was possible, and Push stayed disabled after a commit.
+///
+/// It was there to keep reading state independent of a host, and that fear turned out to be
+/// unfounded: measured against a host that was down, the online form returns in 24ms with no
+/// error and simply omits the remote lines. Unknown standing is then reported as unknown,
+/// which is honest, rather than as "nothing to push", which is not.
 fn status_args() -> Vec<String> {
-    vec!["status".into(), "--scan".into(), "--offline".into()]
+    vec!["status".into(), "--scan".into()]
 }
 
 /// Stage paths for the next commit.
@@ -336,6 +342,85 @@ pub async fn reset_paths(
     read_status(&app, &cwd).await
 }
 
+/// Bring the remote's work down, merging if both sides have moved.
+///
+/// A sync that merges writes 3-way conflict markers into the files and leaves a **pending
+/// merge** that must be resolved and committed before anything can be pushed. That is not a
+/// failure — it is the normal outcome of two people editing one file — so it is reported
+/// through the status this returns rather than as an error.
+#[tauri::command]
+pub async fn sync(app: AppHandle, path: String) -> Result<RepoStatus, String> {
+    let cwd = PathBuf::from(&path);
+    // No timeout override: a sync can pull a lot of data on a large repository.
+    cmd::run(&app, &cwd, vec!["sync".into()], None).await.map_err(to_message)?;
+    read_status(&app, &cwd).await
+}
+
+/// Send commits to the host.
+///
+/// `--fast-forward-merge` is needed after a merge and harmless otherwise. Established by
+/// hand: having resolved a conflict and committed the merge, a plain `push` still reported
+/// "Branch has diverged, sync to merge remote changes", and the flag is what completes it.
+/// Passing it only "when merging" would mean guessing at a state the user cannot see.
+#[tauri::command]
+pub async fn push(app: AppHandle, path: String) -> Result<RepoStatus, String> {
+    let cwd = PathBuf::from(&path);
+    cmd::run(
+        &app,
+        &cwd,
+        vec!["push".into(), "--fast-forward-merge".into()],
+        None,
+    )
+    .await
+    .map_err(to_message)?;
+    read_status(&app, &cwd).await
+}
+
+/// Resolve conflicted files by taking one side wholesale.
+///
+/// **Editing the file is not enough.** With the markers removed by hand, `lore commit` still
+/// refuses: "Unable to commit when <path> is still in conflict". Only this clears the flag,
+/// which is why the app offers it rather than leaving someone to discover the command.
+///
+/// `mine` keeps the local version, `theirs` takes the incoming one. Both discard the other
+/// side for that file, which is why the UI names the files and the choice.
+#[tauri::command]
+pub async fn resolve_conflicts(
+    app: AppHandle,
+    path: String,
+    paths: Vec<String>,
+    take_mine: bool,
+) -> Result<RepoStatus, String> {
+    if paths.is_empty() {
+        return Err("No conflicted files were selected.".into());
+    }
+    let cwd = PathBuf::from(&path);
+    let mut args = vec![
+        "branch".into(),
+        "merge".into(),
+        "resolve".into(),
+        if take_mine { "mine".into() } else { "theirs".into() },
+    ];
+    args.extend(paths);
+    cmd::run(&app, &cwd, args, None).await.map_err(to_message)?;
+    read_status(&app, &cwd).await
+}
+
+/// Abandon a merge and go back to where the working copy was before it started.
+#[tauri::command]
+pub async fn abort_merge(app: AppHandle, path: String) -> Result<RepoStatus, String> {
+    let cwd = PathBuf::from(&path);
+    cmd::run(
+        &app,
+        &cwd,
+        vec!["branch".into(), "merge".into(), "abort".into()],
+        None,
+    )
+    .await
+    .map_err(to_message)?;
+    read_status(&app, &cwd).await
+}
+
 /// Cheap structural check before spending a process on it.
 ///
 /// A `.lore` directory is what makes a folder a repository; testing for it lets the picker
@@ -370,7 +455,10 @@ pub async fn open_repo(app: AppHandle, path: String) -> Result<RepoInfo, String>
     let branch_out = cmd::run(
         &app,
         &cwd,
-        vec!["branch".into(), "list".into(), "--offline".into()],
+        // Online for the same reason as status: `--offline` omits the "Remote branches"
+        // section entirely, so a branch that exists only on the host becomes invisible. With
+        // the host down this degrades to a warning line and the local branches still list.
+        vec!["branch".into(), "list".into()],
         None,
     )
     .await

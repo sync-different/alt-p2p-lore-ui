@@ -15,6 +15,9 @@ const status = (changes: ChangeEntry[]): RepoStatus => ({
   branch: "main",
   revision: 21,
   revision_hash: "deadbeef",
+    standing: "in_sync",
+    pending_merge: false,
+    conflicts: [],
   changes,
 });
 

@@ -417,3 +417,47 @@ fn not_staged_is_not_mistaken_for_staged() {
     assert_eq!(staged, vec!["added.txt"]);
     assert_eq!(status.changes.iter().filter(|c| !c.staged).count(), 1);
 }
+
+/// A merge in progress, captured from a real conflict between two clones of one repository.
+///
+/// Three things here cannot be worked out from the revision numbers, which are equal in both
+/// the "in sync" and "diverged" cases: where the branch stands, whether a merge is open, and
+/// which files lore will refuse to commit.
+#[test]
+fn a_pending_merge_and_its_conflicts_are_read_from_status() {
+    let text = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/status_merge_conflict.txt"),
+    )
+    .unwrap();
+    let status = alt_p2p_lore_ui_lib::lore::parse::parse_status(&text);
+
+    assert!(status.pending_merge, "a merge is open");
+    assert_eq!(status.conflicts, vec!["note.txt"]);
+
+    // "M  note.txt (M)!" is a conflict, not an ordinary change. Counting it among the changes
+    // would offer it for staging, which lore refuses until it is resolved.
+    assert!(
+        !status.changes.iter().any(|c| c.path.contains("note.txt")),
+        "a conflicted file is not an ordinary change: {:?}",
+        status.changes
+    );
+}
+
+/// Where the branch stands, in lore's own words.
+#[test]
+fn branch_standing_is_read_from_the_sentence_not_the_numbers() {
+    use alt_p2p_lore_ui_lib::lore::parse::{parse_status, BranchStanding};
+
+    let case = |line: &str| parse_status(&format!("Repository x\n{line}\n")).standing;
+
+    assert_eq!(case("Local branch in sync with remote"), BranchStanding::InSync);
+    assert_eq!(case("Local branch is ahead of remote"), BranchStanding::Ahead);
+    assert_eq!(case("Local branch is behind remote"), BranchStanding::Behind);
+    assert_eq!(
+        case("Local branch has diverged, synchronize to merge"),
+        BranchStanding::Diverged
+    );
+    // Nothing said means nothing known — and must never read as safe to push.
+    assert_eq!(case("Repository 019f"), BranchStanding::Unknown);
+}

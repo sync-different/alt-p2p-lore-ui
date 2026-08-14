@@ -1,0 +1,11 @@
+Repository 019ffe0983137322823b131400b9822a
+On branch main revision 2 -> 4bc24dc471836bd4e1ab26f569853853ece17da58e75b5b842c35e40d8fd7ff2
+Pending merge, incoming revision 4bc24dc471836bd4e1ab26f569853853ece17da58e75b5b842c35e40d8fd7ff2
+Changes in conflict:
+M  note.txt (M)!
+Untracked files:
+A note2.txt
+A art/
+A art/textures/
+A art/textures/wall.txt
+Tracked changes: 4 added, 1 modified

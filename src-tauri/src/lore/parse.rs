@@ -51,6 +51,25 @@ pub struct ChangeEntry {
     pub path: String,
 }
 
+/// Where the local branch stands against the remote.
+///
+/// Read from the sentence lore prints rather than by comparing revision numbers: they are
+/// equal in both the "in sync" and "diverged" cases, so the numbers cannot tell them apart.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BranchStanding {
+    /// Nothing said, or nothing known — never assume it is safe to push.
+    #[default]
+    Unknown,
+    InSync,
+    /// Local has commits the remote does not. A plain push works.
+    Ahead,
+    /// The remote has moved on. A sync will fast-forward.
+    Behind,
+    /// Both moved. A push is refused until a sync merges, and the merge may conflict.
+    Diverged,
+}
+
 #[derive(Serialize, Clone, Debug, Default, PartialEq, Eq)]
 pub struct RepoStatus {
     pub repo_id: Option<String>,
@@ -60,6 +79,16 @@ pub struct RepoStatus {
     /// Content hash the revision resolves to.
     pub revision_hash: Option<String>,
     pub changes: Vec<ChangeEntry>,
+    /// Where this branch stands against the remote.
+    #[serde(default)]
+    pub standing: BranchStanding,
+    /// A merge is under way — `sync` started one and it has not been committed.
+    #[serde(default)]
+    pub pending_merge: bool,
+    /// Files lore will not let you commit until they are resolved. Editing them by hand is
+    /// **not** enough: `lore branch merge resolve mine|theirs` is what clears the flag.
+    #[serde(default)]
+    pub conflicts: Vec<String>,
 }
 
 /// Parse `lore status --offline`.
@@ -90,11 +119,37 @@ pub fn parse_status(out: &str) -> RepoStatus {
     let mut status = RepoStatus::default();
     // Entries before any header belong to no section; nothing is staged until one says so.
     let mut staged_section = false;
+    let mut conflict_section = false;
 
     for line in out.lines() {
         let line = line.trim_end();
         if line.is_empty() {
             continue;
+        }
+
+        // Where the branch stands, and whether a merge is open. These are sentences, not
+        // fields, and the revision numbers cannot substitute for them: "in sync" and
+        // "diverged" both show equal numbers.
+        {
+            let lower = line.to_lowercase();
+            if lower.starts_with("local branch") {
+                status.standing = if lower.contains("diverged") {
+                    BranchStanding::Diverged
+                } else if lower.contains("is ahead") {
+                    BranchStanding::Ahead
+                } else if lower.contains("is behind") {
+                    BranchStanding::Behind
+                } else if lower.contains("in sync") {
+                    BranchStanding::InSync
+                } else {
+                    BranchStanding::Unknown
+                };
+                continue;
+            }
+            if lower.starts_with("pending merge") {
+                status.pending_merge = true;
+                continue;
+            }
         }
 
         if let Some(rest) = line.strip_prefix("Repository ") {
@@ -124,6 +179,12 @@ pub fn parse_status(out: &str) -> RepoStatus {
         // negative has to be tested first.
         if line.ends_with(':') {
             let lower = line.to_lowercase();
+            if lower.starts_with("changes in conflict") {
+                staged_section = false;
+                conflict_section = true;
+                continue;
+            }
+            conflict_section = false;
             if lower.contains("not staged") || lower.starts_with("untracked") {
                 staged_section = false;
             } else if lower.contains("staged for commit") {
@@ -141,6 +202,21 @@ pub fn parse_status(out: &str) -> RepoStatus {
             if !code.is_empty() && code.len() <= 2 && !path.is_empty()
                 && !is_directory_entry(path)
             {
+                if conflict_section {
+                    // "M  note.txt (M)!" — the suffix says what the other side did and the
+                    // bang marks it unresolved. Only the path is useful here; the rest is
+                    // repeated in the file's own conflict markers.
+                    let name = path
+                        .split(" (")
+                        .next()
+                        .unwrap_or(path)
+                        .trim_end_matches('!')
+                        .trim();
+                    if !name.is_empty() {
+                        status.conflicts.push(name.to_string());
+                    }
+                    continue;
+                }
                 status.changes.push(ChangeEntry {
                     kind: ChangeKind::from_code(code),
                     path: path.to_string(),

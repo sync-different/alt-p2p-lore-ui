@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { FileTree } from "./FileTree";
 import { ChangesPanel } from "./ChangesPanel";
+import { BranchBar } from "./BranchBar";
 import { filterPaths } from "../lib/repo";
 import type { useRepository } from "../hooks/useRepository";
 
@@ -144,6 +145,15 @@ export function RepoPanel({
         />
       </div>
       )}
+
+      <BranchBar
+        status={repo.info.status}
+        busy={repo.staging}
+        onSync={() => void repo.sync()}
+        onPush={() => void repo.push()}
+        onResolve={(mine) => void repo.resolve(repo.info!.status.conflicts, mine)}
+        onAbort={() => void repo.abort()}
+      />
 
       {/* Lock state is a fact about other people's work, so its absence must be visible.
           "Unknown" is not the same as "none", and only one of them is safe to act on. */}
