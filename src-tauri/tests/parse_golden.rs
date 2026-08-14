@@ -461,3 +461,23 @@ fn branch_standing_is_read_from_the_sentence_not_the_numbers() {
     // Nothing said means nothing known — and must never read as safe to push.
     assert_eq!(case("Repository 019f"), BranchStanding::Unknown);
 }
+
+/// Which files a branch switch would overwrite.
+///
+/// Captured from a real refusal. lore protects the work itself — it will not switch — and
+/// names each file with its sizes; the app only needs the paths, to say what to deal with.
+#[test]
+fn the_files_blocking_a_switch_are_named() {
+    let err = "[Error] File has local changes: note.txt (incoming size 62 bytes, file system size 32 bytes)\n\
+               [Error] File has local changes: art/wall.txt (incoming size 5 bytes, file system size 9 bytes)\n\
+               [Error] Local modifications prevent synchronization\n";
+    let blocked = alt_p2p_lore_ui_lib::lore::repo::blocking_files(err);
+    assert_eq!(blocked, vec!["note.txt", "art/wall.txt"]);
+}
+
+/// An unrelated failure names no files, and must not be reported as a tidy list of nothing.
+#[test]
+fn a_different_failure_yields_no_blocking_files() {
+    assert!(alt_p2p_lore_ui_lib::lore::repo::blocking_files("[Error] Not authorized").is_empty());
+    assert!(alt_p2p_lore_ui_lib::lore::repo::blocking_files("").is_empty());
+}

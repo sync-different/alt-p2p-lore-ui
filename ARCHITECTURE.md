@@ -19,6 +19,13 @@ The tunnel is **transport, not structure**. A host can equally be reached direct
 address — a machine on the network, or this one — and past that point nothing differs: the
 same cloning, the same sign-in, the same reasoning about which workspace belongs where.
 
+Which transport is not only a question of reachability. Cloning the same 2 GiB repository from
+the same machine on the same LAN took **16s direct (118 MB/s)** against **100s through the
+tunnel (19 MB/s)**. The tunnel is not slow — that is above alt-p2p's own documented localhost
+figure, and it is carrying DTLS and its own reliability layer over UDP — but where a direct
+route exists it is worth roughly six times the throughput. P2P earns its cost when there is no
+route at all, which is most of the time and not all of it.
+
 ```
 ┌── webview (React) ───────────────────────────────────────┐
 │  components: dumb                                        │

@@ -8,6 +8,8 @@ import { WorkspaceForm } from "./components/WorkspaceForm";
 import { CloneDialog } from "./components/CloneDialog";
 import { CommitDialog } from "./components/CommitDialog";
 import { DiscardDialog } from "./components/DiscardDialog";
+import { SwitchBlockedDialog } from "./components/SwitchBlockedDialog";
+import { NewBranchDialog } from "./components/NewBranchDialog";
 import { WorkspaceTabs } from "./components/WorkspaceTabs";
 import { Activity } from "./components/Activity";
 import { Actions } from "./components/Actions";
@@ -69,6 +71,8 @@ export default function App() {
   const [cloning, setCloning] = useState(false);
   const [committing, setCommitting] = useState(false);
   const [discarding, setDiscarding] = useState<string[] | null>(null);
+  const [switchBlocked, setSwitchBlocked] = useState<{ branch: string; files: string[] } | null>(null);
+  const [newBranch, setNewBranch] = useState(false);
   /**
    * The working copies on this machine, and which one is in front of the user.
    *
@@ -431,7 +435,9 @@ export default function App() {
           label="Branch"
           value={repo.info?.branches.current ?? "—"}
           hint="Branches in this repository"
-          items={(repo.info?.branches.names ?? []).map((n) => ({
+          items={[
+            ...(repo.info ? [{ id: "__new__", label: "New branch…" }] : []),
+            ...(repo.info?.branches.names ?? []).map((n) => ({
             id: n,
             label: n,
             // Read-only in M2: switching rewrites the working copy, which belongs with the
@@ -442,10 +448,21 @@ export default function App() {
                 : repo.info?.branches.remote_only.includes(n)
                   ? "on host only"
                   : undefined,
-            disabled: n !== repo.info?.branches.current,
-          }))}
+            disabled: n === repo.info?.branches.current,
+          })),
+          ]}
           emptyMessage="Open a repository first."
-          onSelect={() => { /* M3: lore branch switch */ }}
+          onSelect={(name) => {
+            if (name === "__new__") {
+              setNewBranch(true);
+              return;
+            }
+            void repo.switchTo(name).then((blocked) => {
+              // Blocked means nothing happened: lore refused, and the user is asked what to
+              // do rather than told what went wrong.
+              if (blocked.length > 0) setSwitchBlocked({ branch: name, files: blocked });
+            });
+          }}
         />
 
         {/* Sign-in sits with the things it describes — repo, branch, who you are — rather
@@ -545,6 +562,35 @@ export default function App() {
             setSigningIn(false);
             push("success", message, activeConfig.name);
             void auth.refresh();
+          }}
+        />
+      )}
+
+      {newBranch && repo.info && (
+        <NewBranchDialog
+          currentBranch={repo.info.branches.current}
+          existing={repo.info.branches.names}
+          onCancel={() => setNewBranch(false)}
+          onCreate={(name) => {
+            setNewBranch(false);
+            void repo.newBranch(name);
+          }}
+        />
+      )}
+
+      {switchBlocked && (
+        <SwitchBlockedDialog
+          branch={switchBlocked.branch}
+          files={switchBlocked.files}
+          onCancel={() => setSwitchBlocked(null)}
+          onCommit={() => {
+            setSwitchBlocked(null);
+            setCommitting(true);
+          }}
+          onDiscard={() => {
+            const files = switchBlocked.files;
+            setSwitchBlocked(null);
+            setDiscarding(files);
           }}
         />
       )}

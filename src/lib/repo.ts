@@ -184,3 +184,13 @@ export const pushRepo = (path: string) => invoke<RepoStatus>("push", { path });
 export const resolveConflicts = (path: string, paths: string[], takeMine: boolean) =>
   invoke<RepoStatus>("resolve_conflicts", { path, paths, takeMine });
 export const abortMerge = (path: string) => invoke<RepoStatus>("abort_merge", { path });
+
+/** What a switch would overwrite, without switching. Empty means it would go through. */
+export const checkSwitchBranch = (path: string, branch: string) =>
+  invoke<string[]>("check_switch_branch", { path, branch });
+
+export const switchBranch = (path: string, branch: string) =>
+  invoke<RepoStatus>("switch_branch", { path, branch });
+
+export const createBranch = (path: string, branch: string) =>
+  invoke<RepoStatus>("create_branch", { path, branch });

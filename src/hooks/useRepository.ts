@@ -6,9 +6,12 @@ import {
   lockIndex,
   openRepo,
   abortMerge,
+  checkSwitchBranch,
+  createBranch,
   pushRepo,
   repoStatus,
   resolveConflicts,
+  switchBranch,
   stagePaths,
   syncRepo,
   unstagePaths,
@@ -367,6 +370,60 @@ export function useRepository(onEvent?: OnEvent) {
     [runRemote],
   );
 
+  /**
+   * Switch branches, asking first what it would overwrite.
+   *
+   * Returns the files a switch would clobber instead of switching, so the caller can put the
+   * question to the user. lore refuses to overwrite them itself — this only means the refusal
+   * is turned into a choice before it happens rather than an error afterwards.
+   */
+  const switchTo = useCallback(
+    async (branch: string): Promise<string[]> => {
+      if (!info) return [];
+      setStaging(true);
+      try {
+        const blocked = await checkSwitchBranch(info.path, branch);
+        if (blocked.length > 0) return blocked;
+        const status = await switchBranch(info.path, branch);
+        // The working copy has been rewritten; the tree on screen describes the old one.
+        await open(info.path);
+        setInfo((prev) => (prev ? { ...prev, status } : prev));
+        onEvent?.("success", `Switched to ${branch}.`);
+        return [];
+      } catch (e) {
+        onEvent?.("error", explainError(String(e), signedInAsRef.current, repoIdentityRef.current).message);
+        return [];
+      } finally {
+        setStaging(false);
+      }
+    },
+    [info, onEvent, open],
+  );
+
+  const newBranch = useCallback(
+    async (branch: string) => {
+      if (!info) return;
+      setStaging(true);
+      try {
+        await createBranch(info.path, branch);
+        // Re-read the repository, not just its status: the branch *list* comes from
+        // `lore branch list`, so a new branch is invisible until that runs again — which is
+        // exactly what "I created it and the dropdown still shows main" looks like.
+        await open(info.path);
+        // Creating does not switch, and saying otherwise would be a lie the user acts on.
+        onEvent?.(
+          "success",
+          `Created ${branch} — on this machine only, until it is pushed. You are still on ${info.status.branch ?? "this branch"}.`,
+        );
+      } catch (e) {
+        onEvent?.("error", explainError(String(e)).message);
+      } finally {
+        setStaging(false);
+      }
+    },
+    [info, onEvent, open],
+  );
+
   const stage = useCallback(
     (paths: string[]) => applyStaging(paths, stagePaths, "Staged"),
     [applyStaging],
@@ -387,6 +444,8 @@ export function useRepository(onEvent?: OnEvent) {
 
   return {
     adoptStatus,
+    switchTo,
+    newBranch,
     sync,
     push,
     abort,

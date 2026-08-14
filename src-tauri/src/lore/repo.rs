@@ -421,6 +421,80 @@ pub async fn abort_merge(app: AppHandle, path: String) -> Result<RepoStatus, Str
     read_status(&app, &cwd).await
 }
 
+/// Files whose local edits would be overwritten by a switch.
+///
+/// lore refuses rather than overwriting — "File has local changes: note.txt (incoming size 62
+/// bytes, file system size 32 bytes)" — and it only objects to files that actually *differ
+/// between the two branches*. Uncommitted work in files the branches agree on carries across
+/// untouched, so warning about every local change would be warning about nothing most of the
+/// time.
+pub fn blocking_files(err: &str) -> Vec<String> {
+    err.lines()
+        .filter_map(|l| l.split("File has local changes:").nth(1))
+        .map(|rest| rest.split(" (").next().unwrap_or(rest).trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect()
+}
+
+/// What a branch switch would do, without doing it.
+///
+/// `--dry-run` predicts the refusal exactly — verified against a working copy where a switch
+/// was blocked — so the app can ask first instead of attempting and translating a failure.
+#[tauri::command]
+pub async fn check_switch_branch(
+    app: AppHandle,
+    path: String,
+    branch: String,
+) -> Result<Vec<String>, String> {
+    let cwd = PathBuf::from(&path);
+    match cmd::run(
+        &app,
+        &cwd,
+        vec!["branch".into(), "switch".into(), branch, "--dry-run".into()],
+        None,
+    )
+    .await
+    {
+        Ok(_) => Ok(Vec::new()),
+        Err(e) => {
+            let text = e.to_string();
+            let blocked = blocking_files(&text);
+            // Blocked by local edits is an answer, not a failure; anything else is a failure.
+            if blocked.is_empty() {
+                Err(to_message(e))
+            } else {
+                Ok(blocked)
+            }
+        }
+    }
+}
+
+/// Switch branches. The working copy is rewritten to match.
+#[tauri::command]
+pub async fn switch_branch(app: AppHandle, path: String, branch: String) -> Result<RepoStatus, String> {
+    let cwd = PathBuf::from(&path);
+    cmd::run(&app, &cwd, vec!["branch".into(), "switch".into(), branch], None)
+        .await
+        .map_err(to_message)?;
+    read_status(&app, &cwd).await
+}
+
+/// Start a new branch here, at the current revision.
+#[tauri::command]
+pub async fn create_branch(app: AppHandle, path: String, branch: String) -> Result<RepoStatus, String> {
+    let name = branch.trim().to_string();
+    if name.is_empty() {
+        return Err("A branch needs a name.".into());
+    }
+    let cwd = PathBuf::from(&path);
+    cmd::run(&app, &cwd, vec!["branch".into(), "create".into(), name.clone()], None)
+        .await
+        .map_err(to_message)?;
+    // Creating does not switch: lore leaves you where you were, and pretending otherwise
+    // would put someone on a branch they did not ask to be on.
+    read_status(&app, &cwd).await
+}
+
 /// Cheap structural check before spending a process on it.
 ///
 /// A `.lore` directory is what makes a folder a repository; testing for it lets the picker
