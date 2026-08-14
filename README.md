@@ -30,6 +30,11 @@ tunnel it can use to carry it. You install one app; there is nothing else to set
 - **Locks** — take one, give it back, and see who holds the rest. Breaking someone else's is a
   separate, deliberate action that names them: Lore itself applies no ownership check at all, so
   the only thing between a mis-click and a colleague's lost afternoon is that confirmation.
+- **Hosts that come and go** — a host being switched off, asleep or restarted is an expected
+  condition rather than an error. Direct hosts are checked rather than assumed, so a machine that
+  is off never shows as fine; a host that comes back re-reads by itself; and a dropped tunnel is
+  put back up. A push that failed while a host was away is raised when it could succeed — with a
+  button, never re-sent behind your back.
 
 ## Install
 

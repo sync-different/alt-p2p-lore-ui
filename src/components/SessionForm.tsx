@@ -1,6 +1,5 @@
 import { useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import type { SessionConfig } from "../lib/sessions";
+import { deleteSession, saveSession, type SessionConfig } from "../lib/sessions";
 
 /**
  * Add or edit a saved session.
@@ -52,7 +51,7 @@ export function SessionForm({
     setError(null);
     setSaving(true);
     try {
-      await invoke("delete_session", { id: existing.id });
+      await deleteSession(existing.id);
       onDeleted?.(existing);
     } catch (e) {
       setError(String(e));
@@ -89,7 +88,7 @@ export function SessionForm({
 
     setSaving(true);
     try {
-      await invoke("save_session", { config, psk: psk || null });
+      await saveSession(config, psk || null);
       onSaved(config);
     } catch (e) {
       setError(String(e));

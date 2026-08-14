@@ -481,3 +481,63 @@ fn a_different_failure_yields_no_blocking_files() {
     assert!(alt_p2p_lore_ui_lib::lore::repo::blocking_files("[Error] Not authorized").is_empty());
     assert!(alt_p2p_lore_ui_lib::lore::repo::blocking_files("").is_empty());
 }
+
+// --- branch standing, captured live -----------------------------------------
+// The parser can produce five standings and the fixtures exercised two: in sync, and unknown
+// (a status with no remote lines at all, which is also what a host being down looks like).
+// Ahead, behind and diverged decide whether Push and Sync are offered — the states a user is
+// actually in when something matters — and none of them had a fixture. These three were
+// captured from two clones of one repository on the LAN host, driven into each state for real.
+
+fn standing_of(name: &str) -> alt_p2p_lore_ui_lib::lore::parse::BranchStanding {
+    let text = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name),
+    )
+    .unwrap();
+    alt_p2p_lore_ui_lib::lore::parse::parse_status(&text).standing
+}
+
+#[test]
+fn a_local_commit_not_yet_pushed_reads_as_ahead() {
+    // "Local branch is ahead of remote". This is the state a push failure leaves behind, so
+    // reading it wrongly would either hide the work or offer to push what is already there.
+    use alt_p2p_lore_ui_lib::lore::parse::BranchStanding;
+    assert_eq!(standing_of("status_ahead.txt"), BranchStanding::Ahead);
+}
+
+#[test]
+fn a_clone_that_has_not_synced_reads_as_behind() {
+    use alt_p2p_lore_ui_lib::lore::parse::BranchStanding;
+    assert_eq!(standing_of("status_behind.txt"), BranchStanding::Behind);
+}
+
+#[test]
+fn commits_on_both_sides_read_as_diverged() {
+    // The revision *numbers* are equal here — both are at 2 — so only the sentence
+    // distinguishes this from "in sync". Counting would get it exactly backwards.
+    use alt_p2p_lore_ui_lib::lore::parse::BranchStanding;
+    assert_eq!(standing_of("status_diverged.txt"), BranchStanding::Diverged);
+}
+
+#[test]
+fn every_standing_the_parser_can_produce_has_a_captured_example() {
+    // Guards the gap this found: five variants, two exercised. A new standing added without a
+    // fixture would otherwise be dead code that looks tested.
+    use alt_p2p_lore_ui_lib::lore::parse::BranchStanding;
+    let seen = [
+        standing_of("status_ahead.txt"),
+        standing_of("status_behind.txt"),
+        standing_of("status_diverged.txt"),
+        standing_of("status_untracked.txt"),
+        standing_of("status_typical.txt"),
+    ];
+    for expected in [
+        BranchStanding::Ahead,
+        BranchStanding::Behind,
+        BranchStanding::Diverged,
+        BranchStanding::InSync,
+        BranchStanding::Unknown,
+    ] {
+        assert!(seen.contains(&expected), "no fixture produces {expected:?}");
+    }
+}

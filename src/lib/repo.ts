@@ -1,8 +1,13 @@
 /**
  * The repository data layer: Tauri commands in, view models out.
  *
- * Everything that knows about `invoke` lives here, so components stay testable without a
- * Tauri runtime and the wire shape (snake_case, from serde) never leaks into JSX.
+ * Every *repository* command lives here, so the wire shape (snake_case, from serde) is
+ * translated once rather than in each caller.
+ *
+ * Not an absolute rule, and the comment used to claim it was: dialogs that own a single
+ * command — clone, commit, discard, sign-in — call `invoke` directly, and are tested by
+ * mocking the module. Stating an invariant the code does not hold is worse than a narrower
+ * one, because the next person believes it.
  */
 
 import { invoke } from "@tauri-apps/api/core";

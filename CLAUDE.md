@@ -217,6 +217,20 @@ mid-session, and one restarted underneath a push.
   failing. The standing falls to `Unknown`, which already refuses to push — but note that the
   app learns a host is unreachable from a *missing line*, not from an exit code.
 
+### Two findings from the end-to-end pass
+
+- **Five standings, two fixtures.** `parse_status` can produce Unknown / InSync / Ahead / Behind /
+  Diverged, and only the first two had a captured example — the three missing ones are exactly
+  those that decide whether Push and Sync are offered. They were captured by driving two clones of
+  a scratch repository into each state against the LAN host. The parser was already right, but
+  "right" had been an assumption. A test now asserts every variant has a fixture, so a new one
+  cannot arrive as dead code that looks tested.
+- **A comment claimed an invariant the code never held.** `lib/repo.ts` said everything that knows
+  about `invoke` lives there; eight components and hooks call it directly. Narrowed to what is
+  true (repository commands are wrapped; single-command dialogs invoke directly and are tested by
+  mocking the module). A tidy rule contradicted in eight places is worse than an honest narrow one,
+  because the next person believes it.
+
 ### Testing traps met here
 
 - **A count of one is not a proof of one.** Every cardinality bug looked correct with one host,
@@ -243,7 +257,9 @@ M1 (shell), M2 (read-only repository browsing) and M3.1–M3.11 are done: tunnel
 workspaces, sign-in with a pasted token, expiry warnings, repository discovery, clone with a live
 progress bar, commit, sync/push and merge conflicts, branch switch and create, locks — taking,
 releasing, and breaking someone else's with a confirmation that names them — and hosts that come
-and go. Next: an end-to-end pass (M3.12).
+and go. M3.12 (end-to-end pass) is under way: parsers re-verified against live 0.8.6 output, and
+the branch-standing fixture gap below closed. What remains is a manual pass through the UI across
+both a P2P host and a direct one.
 
 Deferred and known: the app knows nothing about **links**, which cross access boundaries — a
 `Not authorized` naming an unfamiliar resource id will be one, and ARCHITECTURE.md says why.

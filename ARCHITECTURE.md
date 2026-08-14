@@ -143,6 +143,51 @@ Event subscriptions are held by reference rather than by dependency, so a caller
 callback cannot silently unsubscribe: `listen()` is asynchronous, and an effect that re-runs
 drops whatever arrives in the gap.
 
+**Where `invoke` lives, honestly.** Repository commands are wrapped in `lib/repo.ts` so the wire
+shape is translated once. Dialogs that own a single command — clone, commit, discard, sign-in —
+call it directly and are tested by mocking the module. An earlier comment claimed *everything*
+went through `lib/`, which was true of no version of this app; a narrower rule that holds beats a
+tidy one that does not.
+
+## Hosts that come and go
+
+A host disappearing is an expected condition, not an error, and the two kinds fail differently.
+
+A **P2P** host is a process: its tunnel reports its own phase, and when it dies the supervisor
+says so. A **direct** host is only an address, with nothing to watch — so it is *probed*, one TCP
+connect every 15 seconds and on window focus. Before that the dot was drawn green unconditionally,
+which meant a switched-off machine looked exactly like a serving one.
+
+The probe deliberately distinguishes **refused** from **unreachable**. They arrive very
+differently — a stopped service refuses in about 0.2s, a sleeping machine answers not at all —
+and they send the user to different places: start the service, or go and look at the machine.
+What the probe does *not* claim is that loreserver is healthy or that this identity may do
+anything; an open port is evidence the machine is up, and that is all the dot means.
+
+Three rules follow, and the third is the one to argue with if any:
+
+- **One read at a time.** Window focus, the refresh button and the end of every write all trigger
+  a re-read, so overlap is ordinary — and against an unresponsive host their deadlines add up. A
+  refresh arriving during one queues a single follow-up, which never announces itself.
+- **Reads have their own deadlines**, well below the one sized for transfers, because a read is
+  something a person is waiting on.
+- **Reads and transport recover automatically; writes never do.** A host that returns re-reads
+  status and locks, and a dead tunnel is put back up — three widening attempts, then it says why
+  it stopped. A push that failed is *raised* when the host returns, with a button, and never
+  re-sent. The difference between "your work is waiting" and "your work has just gone out" is
+  something a person needs to have chosen.
+
+## The console
+
+Two streams on one screen: the app's notices, and one line per `lore` process it spawns. A notice
+says what happened in the user's terms; a trace says what the app actually did about it. Together
+they turn "it didn't work" into a report somebody can act on.
+
+Traces are recorded whether or not debug is switched on — the setting gates display. A diagnostic
+that only helps people who enabled it *before* things broke is not much of a diagnostic. Redaction
+happens in Rust at the point of formatting, and because these strings now reach a screen rather
+than a log, anything shaped like a JWT is hidden wherever it appears.
+
 ## Security posture
 
 - The shell plugin is registered for **Rust only** and is absent from the webview's capabilities.
