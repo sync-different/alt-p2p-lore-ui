@@ -251,6 +251,53 @@ mid-session, and one restarted underneath a push.
   Compare the bundle binary's mtime against the build, not the build log against a success line.
   (Two rounds of "still yellow" were spent on the same shape of mistake earlier.)
 
+## Building on Windows
+
+**Nothing here has ever been built or run on Windows.** Everything below is what a reading of
+the tree says will break, not experience — treat it as a starting list rather than a finished
+one, and correct it once you know better.
+
+Four things will stop a Windows build, in the order you will meet them:
+
+| | |
+|---|---|
+| `src-tauri/Cargo.toml` | `keyring = { features = ["apple-native"] }` — macOS-only. Windows needs `windows-native`. This is where **session keys** live, so it is not optional. |
+| `src-tauri/tauri.conf.json` | `"targets": ["app", "dmg"]` are macOS bundles. Use `msi` and/or `nsis`. |
+| `scripts/fetch-deps.sh` | stages the sidecar as `binaries/lore-<triple>` with no **`.exe`**. Tauri looks for `lore-<triple>.exe` on Windows and the failure says only "binary not found". |
+| the script itself | bash, and it shells out to `file -b`. Run it under Git Bash, or port it. The **triple is derived from `rustc`**, so that part is already portable. |
+
+Staging the third-party payload:
+
+- **`lore`** — EpicGames ship a PowerShell installer (`scripts/install.ps1`, the shell one refuses
+  to run on Windows). Pin the version: `-Version v0.8.6` and match whatever the hosts run. The
+  shell installer also needs `--server` to place `loreserver`; assume the same split.
+- **the jar** — platform-independent, built from `alt-p2p-lore` with `mvn package`.
+- **the JRE** — `jlink` from a Windows JDK 17+. The script's read-only-output workaround is
+  written for a Unix `chmod`; expect to adjust it.
+
+Two behaviours to distrust until you have watched them:
+
+- **`lore clone` is driven through a pseudo-terminal** (`portable-pty`) because the progress bar
+  only draws for an interactive terminal. On Windows that is ConPTY, and the parser splits on
+  `` *as well as* `
+` — which matters more there, not less.
+- **Path separators.** The app builds its own relative paths with `/`, and every parser was
+  written against macOS output. If `lore` prints `\` on Windows, the tree and the change list
+  will disagree about what a path is. Check this early; it is the kind of thing that half-works.
+
+**Test hosts** (local test infrastructure; **no secrets in this repo** — session keys live in the
+OS keychain, and coordinator details are in the app's host settings):
+
+- a **direct** LAN host: Fedora 44 at `192.168.1.224`, open `loreserver` 0.8.6 on `41337`
+  (tcp *and* udp — QUIC shares the number), **no authentication**, repository `lantest`. Needs no
+  local ports at all, which makes it the easiest thing to point a fresh build at.
+- a **P2P** host reached through a coordinator, with an identity provider — that one exercises
+  sign-in, and its identity port must match the host's exactly.
+
+The direct host is the better first target on a new platform: no tunnel, no keychain, no identity.
+If the keyring change is not done yet, a direct host with a blank auth URL still gets you clone,
+commit, push, sync and locks.
+
 ## Development Status
 
 M1 (shell), M2 (read-only repository browsing) and M3.1–M3.11 are done: tunnels, hosts and
