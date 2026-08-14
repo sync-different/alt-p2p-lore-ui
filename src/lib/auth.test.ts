@@ -297,3 +297,27 @@ describe("naming an identity is not the same question as membership", () => {
     expect(nameForId("u-unknown", store)).toBe("u-unknown");
   });
 });
+
+describe("a lock is not an auth problem", () => {
+  // The three failures that look alike already had opposite fixes; this is a fourth that
+  // resembles them and has nothing to do with identity at all. Sending someone to sign in
+  // over a colleague's open file wastes their time and does not release the lock.
+  it("names the lock rather than the account", () => {
+    const out = explainError("[Error] File is locked by daniel", "ale");
+    expect(out.message).toMatch(/someone else has this file locked/i);
+    expect(out.message).not.toMatch(/expired|no access/i);
+    expect(out.detail).toContain("locked by daniel");
+  });
+
+  it("is checked before the auth cases, because lock messages name people", () => {
+    // "locked by ale" contains a username; read as an identity problem it would be reported
+    // as a permission failure.
+    const out = explainError("Not authorized: file is locked by ale");
+    expect(out.message).toMatch(/locked/i);
+  });
+
+  it("leaves a genuine permission failure alone", () => {
+    const out = explainError("[Error] Not authorized to access repository", "uitest");
+    expect(out.message).toMatch(/no access to this repository/i);
+  });
+});

@@ -345,3 +345,75 @@ fn an_empty_repository_parses_as_revision_zero_and_no_changes() {
     assert_eq!(status.branch.as_deref(), Some("main"));
     assert!(status.changes.is_empty(), "nothing has been committed, so nothing can have changed");
 }
+
+/// New files, which are invisible until lore is asked to look.
+///
+/// `lore status` without `--scan` does not see them at all — verified against a live working
+/// copy, and the reason a file added on disk never appeared in the tree. Captured from
+/// `status --scan` after creating a file and a nested directory.
+#[test]
+fn untracked_files_are_seen_and_directories_are_not_listed_as_changes() {
+    let text = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/status_untracked.txt"),
+    )
+    .unwrap();
+    let status = alt_p2p_lore_ui_lib::lore::parse::parse_status(&text);
+
+    let paths: Vec<&str> = status.changes.iter().map(|c| c.path.as_str()).collect();
+    assert_eq!(paths, vec!["note.txt", "art/textures/wall.txt"]);
+
+    // lore lists `A art/` and `A art/textures/` alongside the files. They are not separately
+    // committable, and counting them would double the apparent size of a change set.
+    assert!(
+        !paths.iter().any(|p| p.ends_with('/')),
+        "directory entries must not appear as changes: {paths:?}"
+    );
+}
+
+/// Which changes a commit would actually include.
+///
+/// Captured live after staging one of four new files. The distinction exists only in the
+/// section headers: `A note.txt` under "Changes staged for commit:" and `A note2.txt` under
+/// "Untracked files:" are identical lines. A parser that skips headers — as this one did —
+/// cannot tell the user what they are about to commit.
+#[test]
+fn staged_changes_are_told_apart_from_unstaged_ones() {
+    let text = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/status_staged_and_untracked.txt"),
+    )
+    .unwrap();
+    let status = alt_p2p_lore_ui_lib::lore::parse::parse_status(&text);
+
+    let staged: Vec<&str> = status
+        .changes
+        .iter()
+        .filter(|c| c.staged)
+        .map(|c| c.path.as_str())
+        .collect();
+    let unstaged: Vec<&str> = status
+        .changes
+        .iter()
+        .filter(|c| !c.staged)
+        .map(|c| c.path.as_str())
+        .collect();
+
+    assert_eq!(staged, vec!["note.txt"], "only what was staged");
+    assert_eq!(unstaged, vec!["note2.txt", "art/textures/wall.txt"]);
+}
+
+/// "Changes staged for commit" is a prefix of "Changes not staged for commit", so the
+/// negative has to be tested first or everything reads as staged.
+#[test]
+fn not_staged_is_not_mistaken_for_staged() {
+    let text = "Repository 019f\n\
+                Changes not staged for commit:\n\
+                M edited.txt\n\
+                Changes staged for commit:\n\
+                A added.txt\n";
+    let status = alt_p2p_lore_ui_lib::lore::parse::parse_status(text);
+
+    let staged: Vec<&str> = status.changes.iter().filter(|c| c.staged).map(|c| c.path.as_str()).collect();
+    assert_eq!(staged, vec!["added.txt"]);
+    assert_eq!(status.changes.iter().filter(|c| !c.staged).count(), 1);
+}

@@ -41,8 +41,8 @@ describe("changeBadge / changeLabel", () => {
 describe("changeIndex", () => {
   it("maps paths to their change kind", () => {
     const idx = changeIndex(status([
-      { kind: "modified", path: "a.txt" },
-      { kind: "added", path: "dir/b.uasset" },
+      { kind: "modified", staged: false, path: "a.txt" },
+      { kind: "added", staged: false, path: "dir/b.uasset" },
     ]));
     expect(idx.get("a.txt")).toBe("modified");
     expect(idx.get("dir/b.uasset")).toBe("added");
@@ -57,8 +57,8 @@ describe("changeIndex", () => {
 
 describe("directoryHasChanges", () => {
   const idx = changeIndex(status([
-    { kind: "modified", path: "Content/Characters/Hero.uasset" },
-    { kind: "added", path: "README.md" },
+    { kind: "modified", staged: false, path: "Content/Characters/Hero.uasset" },
+    { kind: "added", staged: false, path: "README.md" },
   ]));
 
   it("marks a directory containing a change", () => {

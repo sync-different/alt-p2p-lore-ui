@@ -6,6 +6,8 @@ import { FileView } from "./components/FileView";
 import { HostBar } from "./components/HostBar";
 import { WorkspaceForm } from "./components/WorkspaceForm";
 import { CloneDialog } from "./components/CloneDialog";
+import { CommitDialog } from "./components/CommitDialog";
+import { DiscardDialog } from "./components/DiscardDialog";
 import { WorkspaceTabs } from "./components/WorkspaceTabs";
 import { Activity } from "./components/Activity";
 import { Actions } from "./components/Actions";
@@ -65,6 +67,8 @@ export default function App() {
   const [addingNew, setAddingNew] = useState(false);
   const [editingWorkspace, setEditingWorkspace] = useState<WorkspaceSummary | null>(null);
   const [cloning, setCloning] = useState(false);
+  const [committing, setCommitting] = useState(false);
+  const [discarding, setDiscarding] = useState<string[] | null>(null);
   /**
    * The working copies on this machine, and which one is in front of the user.
    *
@@ -495,7 +499,9 @@ export default function App() {
       <div className="flex min-h-0 flex-1">
         <div className="flex w-72 shrink-0 flex-col border-r border-line bg-surface-1">
           <Pane title="Files" className="flex-1">
-            <RepoPanel repo={repo} onPickFolder={pickFolder} />
+            <RepoPanel repo={repo} onPickFolder={pickFolder} onCommit={() => setCommitting(true)}
+              onDiscard={(paths) => setDiscarding(paths)}
+            />
           </Pane>
           <Prerequisites />
         </div>
@@ -539,6 +545,32 @@ export default function App() {
             setSigningIn(false);
             push("success", message, activeConfig.name);
             void auth.refresh();
+          }}
+        />
+      )}
+
+      {discarding && repo.info && (
+        <DiscardDialog
+          path={repo.info.path}
+          entries={repo.info.status.changes.filter((c) => discarding.includes(c.path))}
+          onCancel={() => setDiscarding(null)}
+          onDone={(status, summary) => {
+            setDiscarding(null);
+            repo.adoptStatus(status);
+            push("info", `Discarded — ${summary}.`, activeWorkspaceName.current);
+          }}
+        />
+      )}
+
+      {committing && repo.info && (
+        <CommitDialog
+          path={repo.info.path}
+          staged={repo.info.status.changes.filter((c) => c.staged)}
+          onCancel={() => setCommitting(false)}
+          onCommitted={(status, message) => {
+            setCommitting(false);
+            repo.adoptStatus(status);
+            push("success", `Committed: ${message}`, activeWorkspaceName.current);
           }}
         />
       )}

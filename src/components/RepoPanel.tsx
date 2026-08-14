@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { FileTree } from "./FileTree";
+import { ChangesPanel } from "./ChangesPanel";
 import { filterPaths } from "../lib/repo";
 import type { useRepository } from "../hooks/useRepository";
 
@@ -14,9 +15,15 @@ import type { useRepository } from "../hooks/useRepository";
 export function RepoPanel({
   repo,
   onPickFolder,
+  onCommit,
+  onDiscard,
 }: {
   repo: ReturnType<typeof useRepository>;
   onPickFolder: () => void | Promise<void>;
+  /** Open the commit dialog for what is currently staged. */
+  onCommit: () => void;
+  /** Open the discard dialog for these paths. Nothing is discarded without it. */
+  onDiscard: (paths: string[]) => void;
 }) {
   const [filter, setFilter] = useState("");
   // Flat vs nested for the changed view. With 2163 changed files a tree is easier to
@@ -100,6 +107,19 @@ export function RepoPanel({
         />
       </div>
 
+      {repo.mode === "changed" && !flat ? (
+        // Staging is a different task from browsing: it asks "what am I about to
+        // send", which is a boundary between two lists rather than a column in one.
+        // The flat toggle still gives a tree view of the same set.
+        <ChangesPanel
+          changes={repo.info.status.changes}
+          busy={repo.staging}
+          onStage={(paths) => void repo.stage(paths)}
+          onUnstage={(paths) => void repo.unstage(paths)}
+    onDiscard={onDiscard}
+          onCommit={onCommit}
+        />
+      ) : (
       <div className="min-h-0 flex-1">
         <FileTree
           rows={rows}
@@ -123,6 +143,7 @@ export function RepoPanel({
           }
         />
       </div>
+      )}
 
       {/* Lock state is a fact about other people's work, so its absence must be visible.
           "Unknown" is not the same as "none", and only one of them is safe to act on. */}

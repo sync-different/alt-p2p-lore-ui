@@ -16,6 +16,8 @@ export type ChangeKind =
   | { other: string };
 
 export interface ChangeEntry {
+  /** Already staged, so part of the next commit. Only the section header says so. */
+  staged: boolean;
   kind: ChangeKind;
   path: string;
 }
@@ -160,3 +162,11 @@ export function filterPaths<T extends { path: string }>(items: T[], query: strin
   if (!q) return items;
   return items.filter((i) => i.path.toLowerCase().includes(q));
 }
+
+/** Put paths into the next commit. Returns the status as it now stands. */
+export const stagePaths = (path: string, paths: string[]) =>
+  invoke<RepoStatus>("stage_paths", { path, paths });
+
+/** Take paths back out of the next commit. Files on disk are untouched. */
+export const unstagePaths = (path: string, paths: string[]) =>
+  invoke<RepoStatus>("unstage_paths", { path, paths });

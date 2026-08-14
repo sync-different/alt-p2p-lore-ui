@@ -227,6 +227,115 @@ pub fn port_of(url: &str) -> Option<u16> {
         .ok()
 }
 
+/// How status is always asked for.
+///
+/// **`--scan` is not optional.** Without it `lore status` does not see new files at all — a
+/// file created on disk is simply absent, which is why one added to a working copy never
+/// appeared in the tree. Scanning reconciles the working copy with what lore has recorded.
+///
+/// It is a local mutation (files get marked dirty), and it costs 225ms on a 2 GiB working copy
+/// and 83ms warm, so there is no reason to defer it to a special "deep refresh" the user has
+/// to know about.
+///
+/// `--offline` stays: reading state must not depend on a host being reachable, and discovery
+/// is entirely local.
+fn status_args() -> Vec<String> {
+    vec!["status".into(), "--scan".into(), "--offline".into()]
+}
+
+/// Stage paths for the next commit.
+///
+/// `--scan` is passed because `lore stage` **does not walk the filesystem**: without it, only
+/// files already marked dirty are staged, so staging a file the user can plainly see would
+/// silently do nothing. With it, discovery and staging happen in one pass.
+///
+/// Paths are passed explicitly rather than staging everything, because the user chose them —
+/// and a commit that quietly includes more than was ticked is the worst kind of surprise in a
+/// tool that moves other people's work.
+#[tauri::command]
+pub async fn stage_paths(app: AppHandle, path: String, paths: Vec<String>) -> Result<RepoStatus, String> {
+    if paths.is_empty() {
+        return Err("Nothing was selected to stage.".into());
+    }
+    let cwd = PathBuf::from(&path);
+    let mut args = vec!["stage".into(), "--scan".into()];
+    args.extend(paths);
+    cmd::run(&app, &cwd, args, None).await.map_err(to_message)?;
+    read_status(&app, &cwd).await
+}
+
+/// Take paths back out of the next commit. The files on disk are untouched.
+#[tauri::command]
+pub async fn unstage_paths(app: AppHandle, path: String, paths: Vec<String>) -> Result<RepoStatus, String> {
+    if paths.is_empty() {
+        return Err("Nothing was selected to unstage.".into());
+    }
+    let cwd = PathBuf::from(&path);
+    let mut args = vec!["unstage".into()];
+    args.extend(paths);
+    cmd::run(&app, &cwd, args, None).await.map_err(to_message)?;
+    read_status(&app, &cwd).await
+}
+
+/// Read status the one way it is ever read.
+async fn read_status(app: &AppHandle, cwd: &Path) -> Result<RepoStatus, String> {
+    let out = cmd::run(app, cwd, status_args(), None).await.map_err(to_message)?;
+    Ok(parse::parse_status(&out.stdout))
+}
+
+/// Commit what is staged.
+///
+/// The message is a positional argument, so an empty one would be a missing argument rather
+/// than an empty message — refused here, where the reason can be said plainly.
+///
+/// Nothing is staged implicitly: `lore commit` writes what the previous `stage` calls put
+/// there, which is what the user ticked. A commit that quietly includes more than was chosen
+/// is the worst kind of surprise in a tool that moves other people's work.
+#[tauri::command]
+pub async fn commit(app: AppHandle, path: String, message: String) -> Result<RepoStatus, String> {
+    let message = message.trim().to_string();
+    if message.is_empty() {
+        return Err("A commit needs a message.".into());
+    }
+    let cwd = PathBuf::from(&path);
+    cmd::run(&app, &cwd, vec!["commit".into(), message], None)
+        .await
+        .map_err(to_message)?;
+    read_status(&app, &cwd).await
+}
+
+/// Throw away changes.
+///
+/// Two very different operations behind one word, kept apart deliberately:
+///
+/// - **restore** (`lore reset <paths>`) puts tracked files back to the committed revision.
+///   Run against a file lore does not track it reports "No files reset" and changes nothing.
+/// - **purge** (`--purge`) *deletes untracked files from disk*. That is the only way to remove
+///   a new file through lore, and it is unrecoverable — there is no earlier revision to go
+///   back to, because the file was never committed.
+///
+/// `purge` is therefore never implied. The caller has to ask for it, and the UI has to have
+/// said what it means.
+#[tauri::command]
+pub async fn reset_paths(
+    app: AppHandle,
+    path: String,
+    paths: Vec<String>,
+    purge: bool,
+) -> Result<RepoStatus, String> {
+    if paths.is_empty() {
+        return Err("Nothing was selected to discard.".into());
+    }
+    let cwd = PathBuf::from(&path);
+    let mut args = vec!["reset".into()];
+    if purge {
+        args.push("--purge".into());
+    }
+    args.extend(paths);
+    cmd::run(&app, &cwd, args, None).await.map_err(to_message)?;
+    read_status(&app, &cwd).await
+}
+
 /// Cheap structural check before spending a process on it.
 ///
 /// A `.lore` directory is what makes a folder a repository; testing for it lets the picker
@@ -255,7 +364,7 @@ pub async fn open_repo(app: AppHandle, path: String) -> Result<RepoInfo, String>
     let remote = read_remote_url(&cwd);
     let identity = read_identity(&cwd);
 
-    let status_out = cmd::run(&app, &cwd, vec!["status".into(), "--offline".into()], None)
+    let status_out = cmd::run(&app, &cwd, status_args(), None)
         .await
         .map_err(to_message)?;
     let branch_out = cmd::run(
@@ -282,7 +391,7 @@ pub async fn open_repo(app: AppHandle, path: String) -> Result<RepoInfo, String>
 #[tauri::command]
 pub async fn repo_status(app: AppHandle, path: String) -> Result<RepoStatus, String> {
     let cwd = PathBuf::from(path);
-    let out = cmd::run(&app, &cwd, vec!["status".into(), "--offline".into()], None)
+    let out = cmd::run(&app, &cwd, status_args(), None)
         .await
         .map_err(to_message)?;
     Ok(parse::parse_status(&out.stdout))

@@ -6,10 +6,13 @@ import {
   lockIndex,
   openRepo,
   repoStatus,
+  stagePaths,
+  unstagePaths,
   type ChangeKind,
   type DirEntry,
   type FileLock,
   type RepoInfo,
+  type RepoStatus,
 } from "../lib/repo";
 import { flattenTree, toggleExpanded, treeFromPaths, type LoadedDirs } from "../lib/tree";
 import { rememberRecent, repoName } from "../lib/recents";
@@ -294,11 +297,56 @@ export function useRepository(onEvent?: OnEvent) {
     signedInAsRef.current = who;
   }, []);
 
+  /**
+   * Stage or unstage, then adopt the status the command returned.
+   *
+   * The command re-reads status itself, so this needs no follow-up refresh — one process
+   * instead of two, and no window where the list on screen disagrees with what was just done.
+   */
+  const [staging, setStaging] = useState(false);
+  const applyStaging = useCallback(
+    async (paths: string[], fn: (path: string, paths: string[]) => Promise<RepoStatus>, verb: string) => {
+      if (!info || paths.length === 0) return;
+      setStaging(true);
+      try {
+        const status = await fn(info.path, paths);
+        setInfo((prev) => (prev ? { ...prev, status } : prev));
+        onEvent?.(
+          "info",
+          `${verb} ${paths.length} file${paths.length === 1 ? "" : "s"}.`,
+        );
+      } catch (e) {
+        onEvent?.("error", explainError(String(e), signedInAsRef.current, repoIdentityRef.current).message);
+      } finally {
+        setStaging(false);
+      }
+    },
+    [info, onEvent],
+  );
+
+  const stage = useCallback(
+    (paths: string[]) => applyStaging(paths, stagePaths, "Staged"),
+    [applyStaging],
+  );
+  const unstage = useCallback(
+    (paths: string[]) => applyStaging(paths, unstagePaths, "Unstaged"),
+    [applyStaging],
+  );
+
+  /** Take a status a command has already read, rather than spending a process re-reading it. */
+  const adoptStatus = useCallback((status: RepoStatus) => {
+    setInfo((prev) => (prev ? { ...prev, status } : prev));
+  }, []);
+
   const setRepoIdentity = useCallback((who: string | null) => {
     repoIdentityRef.current = who;
   }, []);
 
   return {
+    adoptStatus,
+    stage,
+    unstage,
+    staging,
     setReach,
     setSignedInAs,
     setRepoIdentity,

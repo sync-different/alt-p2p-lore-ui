@@ -40,6 +40,13 @@ impl ChangeKind {
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct ChangeEntry {
+    /// Already staged, and so part of the next commit.
+    ///
+    /// Only the **section header** says so — the code on the line does not. `A note.txt`
+    /// appears identically under "Changes staged for commit:" and under "Untracked files:",
+    /// so a parser that skips headers cannot tell what a commit would include.
+    #[serde(default)]
+    pub staged: bool,
     pub kind: ChangeKind,
     pub path: String,
 }
@@ -70,8 +77,19 @@ pub struct RepoStatus {
 /// files are listed as `M` while `lore diff` reports no differences for any of them — they
 /// were marked dirty without their contents changing. Callers must not assume an entry
 /// here implies a diff exists.
+/// Is this entry a directory rather than a file?
+///
+/// `status --scan` lists both — `A art/` alongside `A art/textures/wall.txt`. The directory
+/// entries are not separately committable and would double the apparent size of a change set,
+/// so they are dropped. The trailing slash is the only marker lore gives.
+fn is_directory_entry(path: &str) -> bool {
+    path.ends_with('/')
+}
+
 pub fn parse_status(out: &str) -> RepoStatus {
     let mut status = RepoStatus::default();
+    // Entries before any header belong to no section; nothing is staged until one says so.
+    let mut staged_section = false;
 
     for line in out.lines() {
         let line = line.trim_end();
@@ -100,9 +118,17 @@ pub fn parse_status(out: &str) -> RepoStatus {
             continue;
         }
 
-        // Section headers such as "Changes not staged for commit:" carry no data we need;
-        // the codes on the entries themselves are unambiguous.
+        // Section headers are the only thing that says whether an entry is staged. Three
+        // are seen in practice: "Changes staged for commit:", "Changes not staged for
+        // commit:" and "Untracked files:" — and the first is a prefix of the second, so the
+        // negative has to be tested first.
         if line.ends_with(':') {
+            let lower = line.to_lowercase();
+            if lower.contains("not staged") || lower.starts_with("untracked") {
+                staged_section = false;
+            } else if lower.contains("staged for commit") {
+                staged_section = true;
+            }
             continue;
         }
 
@@ -112,10 +138,13 @@ pub fn parse_status(out: &str) -> RepoStatus {
             let path = path.trim();
             // A single-character code followed by a path. Anything else is prose we do not
             // recognise and deliberately ignore.
-            if !code.is_empty() && code.len() <= 2 && !path.is_empty() {
+            if !code.is_empty() && code.len() <= 2 && !path.is_empty()
+                && !is_directory_entry(path)
+            {
                 status.changes.push(ChangeEntry {
                     kind: ChangeKind::from_code(code),
                     path: path.to_string(),
+                    staged: staged_section,
                 });
             }
         }

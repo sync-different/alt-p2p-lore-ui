@@ -143,6 +143,15 @@ const IDENTITY_SIGNS = [
   "401",
 ];
 
+/**
+ * Someone else is holding the file.
+ *
+ * Not a permission problem and not a sign-in problem: the account is fine, the operation is
+ * fine, and another person is working on that file. The only useful response names them, and
+ * neither signing in again nor asking for a grant would change anything.
+ */
+const LOCK_SIGNS = ["locked by", "is locked", "lock held", "file is locked"];
+
 const PERMISSION_SIGNS = [
   "not authorized",
   "not authorised",
@@ -155,6 +164,11 @@ const PERMISSION_SIGNS = [
 export function looksLikeAuthFailure(text: string): boolean {
   const t = text.toLowerCase();
   return IDENTITY_SIGNS.some((s) => t.includes(s));
+}
+
+export function looksLikeLockFailure(text: string): boolean {
+  const t = text.toLowerCase();
+  return LOCK_SIGNS.some((s) => t.includes(s));
 }
 
 export function looksLikePermissionFailure(text: string): boolean {
@@ -231,6 +245,16 @@ export function explainError(
   /** What this repository is pinned to act as, if anything. */
   repoIdentity?: string | null,
 ): Explained {
+  // Checked before the auth cases: a lock message can mention a user, and reading it as an
+  // identity problem would send someone to sign in over a colleague's open file.
+  if (looksLikeLockFailure(raw)) {
+    return {
+      message:
+        "Someone else has this file locked. Ask them to release it, or work on something else — " +
+        "signing in again will not help.",
+      detail: raw,
+    };
+  }
   if (looksLikeMissingIdentity(raw)) {
     return {
       message: repoIdentity
