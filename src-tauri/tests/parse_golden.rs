@@ -326,3 +326,22 @@ fn the_current_marker_is_only_honoured_in_the_local_section() {
     let b = parse_branches("Local branches:\n  main\nRemote branches:\n* other\n");
     assert_eq!(b.current, None);
 }
+
+/// A repository that has just been created: revision 0, no files, nothing committed.
+///
+/// Captured from `atlas` on a second host built for testing two hosts at once. It matters
+/// because it is the state every new repository starts in, and the UI has to tell it apart
+/// from a folder that happens to be empty — one is normal, the other sounds like a fault.
+#[test]
+fn an_empty_repository_parses_as_revision_zero_and_no_changes() {
+    let text = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/status_empty_repository.txt"),
+    )
+    .unwrap();
+    let status = alt_p2p_lore_ui_lib::lore::parse::parse_status(&text);
+
+    assert_eq!(status.revision, Some(0));
+    assert_eq!(status.branch.as_deref(), Some("main"));
+    assert!(status.changes.is_empty(), "nothing has been committed, so nothing can have changed");
+}

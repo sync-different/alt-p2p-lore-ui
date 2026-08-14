@@ -66,12 +66,13 @@ export function useAuth(
       watching.current = sessionName;
       announced.current = null;
     }
-    // A session with no identity port needs no sign-in; polling it would only produce a
-    // "not signed in" badge on a host that never asked for one.
-    if (identityPort == null) {
-      setStatus(null);
-      return;
-    }
+    // Read the store even for a host with no identity port.
+    //
+    // `all` is the whole of `lore auth list` — every identity on this machine — and it is
+    // what turns a `u-…` id into a name. Skipping the read while a host without sign-in was
+    // selected left every *other* tab showing raw ids, because the only place their names
+    // could come from had not been loaded. What stays per-host is membership and expiry;
+    // a name is just a label.
     let live = true;
     const tick = async () => {
       const s = await refresh();

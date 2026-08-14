@@ -271,3 +271,29 @@ describe("identities are per host, not global", () => {
     expect(identitiesAt(store, undefined)).toEqual([]);
   });
 });
+
+describe("naming an identity is not the same question as membership", () => {
+  // Reported from testing: with a host that has no sign-in selected, every *other* tab showed
+  // raw `u-…` ids. The names live in the machine-wide store, and that store was not being read
+  // while such a host was active — so the only place the names could come from was missing.
+  const store = [
+    { auth_url: "https://127.0.0.1:9443", resource: null, user: "ale", user_id: "u-87c4", domains: [], expires_raw: null, expires_ms: null },
+    { auth_url: "https://127.0.0.1:9443", resource: null, user: "uitest", user_id: "u-99f5", domains: [], expires_raw: null, expires_ms: null },
+  ];
+
+  it("resolves a name from the whole store, whichever host is selected", () => {
+    expect(nameForId("u-87c4", store)).toBe("ale (u-87c4)");
+    expect(nameForId("u-99f5", store)).toBe("uitest (u-99f5)");
+  });
+
+  it("still scopes membership to one host", () => {
+    // The split that matters: a name is a label and comes from anywhere; being signed in is
+    // per auth URL and must not.
+    expect(identitiesAt(store, 9443)).toEqual(["u-87c4", "u-99f5"]);
+    expect(identitiesAt(store, 9444)).toEqual([]);
+  });
+
+  it("falls back to the id rather than showing nothing", () => {
+    expect(nameForId("u-unknown", store)).toBe("u-unknown");
+  });
+});

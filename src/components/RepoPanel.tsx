@@ -113,7 +113,13 @@ export function RepoPanel({
               ? "Nothing matches that filter."
               : repo.mode === "changed"
                 ? "No changes."
-                : "This folder is empty."
+                : // Revision 0 means nothing has ever been committed — a repository that was
+                  // just created, which is a different thing from a folder that happens to be
+                  // empty. Saying "this folder is empty" there reads as a local fault and
+                  // sends someone looking for files that were never there.
+                  repo.info?.status.revision === 0
+                  ? "This repository is empty — nothing has been committed to it yet."
+                  : "This folder is empty."
           }
         />
       </div>
