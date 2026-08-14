@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Tunnel } from "./reachability";
+import { authorityOf } from "./sessions";
+import type { ServingHost } from "./reachability";
 import type { WorkspaceHealth } from "../components/WorkspaceTabs";
 
 /**
@@ -66,12 +67,13 @@ export const setWorkspaceIdentity = (id: string, identity: string | null) =>
  */
 export function workspaceHealth(
   w: WorkspaceSummary,
-  tunnels: Tunnel[],
+  hosts: ServingHost[],
   signedInIds: string[],
 ): WorkspaceHealth {
   if (!w.exists) return "missing";
-  if (w.remote_port == null) return "unknown";
-  const served = tunnels.some((t) => t.connected && t.port === w.remote_port);
+  if (!w.remote_url) return "unknown";
+  const wanted = authorityOf(w.remote_url);
+  const served = hosts.some((h) => h.available && authorityOf(h.baseUrl) === wanted);
   if (!served) return "unreachable";
   // A pinned identity that is not signed in fails every call with "No token stored" — true,
   // and nothing about that message points at the repository.

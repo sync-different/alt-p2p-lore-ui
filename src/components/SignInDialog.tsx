@@ -20,15 +20,15 @@ const TOKEN_TYPES = ["lore", "api-key", "eg1"];
 
 export function SignInDialog({
   sessionName,
-  identityPort,
+  authUrl: hostAuthUrl,
   identities = [],
   canSignIn = true,
   onDone,
   onCancel,
 }: {
   sessionName: string;
-  /** The tunnel-forwarded identity port; the auth URL must match the host's exactly. */
-  identityPort: number;
+  /** Where this host files its tokens. Must match the host's advertised auth_url exactly. */
+  authUrl: string;
   /** Already stored for this host. Signing in adds to these rather than replacing them. */
   identities?: AuthIdentity[];
   /**
@@ -41,7 +41,7 @@ export function SignInDialog({
 }) {
   const [token, setToken] = useState("");
   const [tokenType, setTokenType] = useState("lore");
-  const [authUrl, setAuthUrl] = useState(`https://127.0.0.1:${identityPort}`);
+  const [authUrl, setAuthUrl] = useState(hostAuthUrl);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 

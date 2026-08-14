@@ -1,95 +1,103 @@
 import { describe, expect, it } from "vitest";
-import { explainUnreachable, looksUnreachable, reachability, type Tunnel } from "./reachability";
+import { explainUnreachable, looksUnreachable, reachability, type ServingHost } from "./reachability";
 
 /**
  * The failure this exists for, reported from testing:
  *
- *   connected as session "daniel" (forwarding 41501), opened a repository cloned through
- *   "main" (remote grpc://127.0.0.1:41400), pressed refresh, and got
- *   "Disconnected from server … Unable to check lock status while offline".
+ *   connected as "daniel" (forwarding 41501), opened a repository cloned through "main"
+ *   (remote grpc://127.0.0.1:41400), pressed refresh, and got "Disconnected from server".
  *
  * Everything about that message points at the network. The tunnel was healthy; it was simply
- * listening on a different port than the working copy dials.
+ * serving a different address than the working copy dials.
  *
- * And the correction that followed: the question is about the **machine**, not the tab.
- * `lore` dials a loopback port and cannot see which session is on screen, so a repository
- * served by another tab's tunnel is reachable. Asking only about the active tab warned about
- * a setup that worked.
+ * A host is identified by the URL its working copies dial — derived from a forwarded port for
+ * P2P, given outright for a direct host. Matching on the port alone made every host on 41337
+ * the same host, which is only true while the transport is a tunnel.
  */
 
-const t = (sessionName: string, port: number, connected = true): Tunnel => ({
-  sessionName,
-  port,
-  connected,
+const host = (name: string, baseUrl: string, available = true, isP2p = true): ServingHost => ({
+  name,
+  baseUrl,
+  available,
+  isP2p,
 });
 
+const CTONE = "grpc://127.0.0.1:41400";
+const LOCAL_B = "grpc://127.0.0.1:41600";
+const REMOTE = "grpc://lore.example:41337";
+
 describe("reachability", () => {
-  it("is satisfied by any live tunnel on the right port, whatever tab is on screen", () => {
-    const r = reachability({ remotePort: 41400, tunnels: [t("daniel", 41400)] });
+  it("is satisfied by any available host on the right URL, whatever tab is on screen", () => {
+    const r = reachability({ remoteUrl: CTONE, hosts: [host("ctone", CTONE)] });
     expect(r.state).toBe("ok");
-    expect(r.servedBy).toBe("daniel");
+    expect(r.servedBy).toBe("ctone");
   });
 
-  it("names which session is carrying it, so a later failure has a starting point", () => {
-    const r = reachability({
-      remotePort: 41400,
-      tunnels: [t("main", 41501), t("daniel", 41400)],
-    });
+  it("matches on authority, so a path or trailing slash cannot defeat it", () => {
+    // The two URLs are written by different programs.
+    const r = reachability({ remoteUrl: `${CTONE}/019f9e`, hosts: [host("ctone", CTONE)] });
     expect(r.state).toBe("ok");
-    expect(r.servedBy).toBe("daniel");
   });
 
-  it("ignores a tunnel that is not connected yet", () => {
-    // Right port, still punching: nothing is listening, so nothing is reachable.
-    const r = reachability({ remotePort: 41400, tunnels: [t("daniel", 41400, false)] });
-    expect(r.state).toBe("not_connected");
+  it("serves a direct host exactly as it serves a tunnelled one", () => {
+    // The point of the refactor: past identity, transport does not matter.
+    const r = reachability({ remoteUrl: REMOTE, hosts: [host("studio", REMOTE, true, false)] });
+    expect(r.state).toBe("ok");
   });
 
-  it("names both ports when something is connected but not on this one", () => {
-    const r = reachability({ remotePort: 41400, tunnels: [t("daniel", 41501)] });
+  it("tells a P2P host that is not connected from a direct host that did not answer", () => {
+    // Different remedies, so different sentences: one is a button, the other is someone
+    // else's machine being down.
+    const p2p = reachability({ remoteUrl: CTONE, hosts: [host("ctone", CTONE, false)] });
+    expect(p2p.message).toMatch(/not connected/i);
+
+    const direct = reachability({ remoteUrl: REMOTE, hosts: [host("studio", REMOTE, false, false)] });
+    expect(direct.message).toMatch(/did not answer/i);
+    expect(direct.message).toMatch(/lore\.example:41337/);
+  });
+
+  it("names both sides when the hosts that are up serve something else", () => {
+    const r = reachability({ remoteUrl: CTONE, hosts: [host("local B", LOCAL_B)] });
     expect(r.state).toBe("port_mismatch");
-    expect(r.message).toContain("41400");
-    expect(r.message).toContain("41501");
-    expect(r.message).toContain("daniel");
+    expect(r.message).toContain("127.0.0.1:41400");
+    expect(r.message).toContain("127.0.0.1:41600");
   });
 
-  it("offers both ways out, because only the user knows which is right", () => {
-    // Connect a different session, or re-point this one — the second is correct only if the
-    // sessions reach the same host, which the app cannot know.
-    const r = reachability({ remotePort: 41400, tunnels: [t("daniel", 41501)] });
-    expect(r.message).toMatch(/connect the session/i);
-    expect(r.message).toMatch(/local port/i);
-    // And the part that is easy to forget: a config change does nothing until reconnect.
-    expect(r.message).toMatch(/reconnect/i);
-  });
-
-  it("says which port is needed when nothing is connected at all", () => {
-    const r = reachability({ remotePort: 41400, tunnels: [] });
+  it("says so plainly when nothing here serves that address at all", () => {
+    const r = reachability({ remoteUrl: REMOTE, hosts: [] });
     expect(r.state).toBe("not_connected");
-    expect(r.message).toContain("41400");
+    expect(r.message).toMatch(/no host here serves it/i);
+  });
+
+  it("does not confuse a direct host with a loopback one on the same port", () => {
+    // The bug the port-based version had: 41400 anywhere meant 41400 everywhere.
+    const r = reachability({
+      remoteUrl: CTONE,
+      hosts: [host("elsewhere", "grpc://lore.example:41400", true, false)],
+    });
+    expect(r.state).not.toBe("ok");
   });
 
   it("says nothing about a repository with no remote", () => {
-    // Created locally, never cloned. There is nothing to reach and nothing to warn about.
-    const r = reachability({ remotePort: null, tunnels: [t("daniel", 41400)] });
+    const r = reachability({ remoteUrl: null, hosts: [host("ctone", CTONE)] });
     expect(r.state).toBe("no_remote");
     expect(r.message).toBeUndefined();
   });
 });
 
 describe("explainUnreachable", () => {
-  const mismatch = reachability({ remotePort: 41400, tunnels: [t("daniel", 41501)] });
+  const mismatch = reachability({ remoteUrl: CTONE, hosts: [host("local B", LOCAL_B)] });
 
   it("replaces the gRPC error with the reason", () => {
     const raw =
-      "[Error] Disconnected from server at lore-transport/src/grpc/mod.rs:588 " +
-      "connect: grpc://127.0.0.1:41400 - Unable to check lock status while offline";
+      "[Error] Disconnected from server … connect: grpc://127.0.0.1:41400 - " +
+      "Unable to check lock status while offline";
     expect(explainUnreachable(raw, mismatch)).toBe(mismatch.message);
   });
 
-  it("leaves the error alone when the port is served", () => {
-    // A genuinely dropped connection must not be blamed on a port that was always correct.
-    const ok = reachability({ remotePort: 41400, tunnels: [t("daniel", 41400)] });
+  it("leaves the error alone when the address is served", () => {
+    // A genuinely dropped connection must not be blamed on an address that was correct.
+    const ok = reachability({ remoteUrl: CTONE, hosts: [host("ctone", CTONE)] });
     const raw = "[Error] Disconnected from server";
     expect(explainUnreachable(raw, ok)).toBe(raw);
   });

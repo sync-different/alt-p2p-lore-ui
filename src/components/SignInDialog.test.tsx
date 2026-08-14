@@ -37,7 +37,7 @@ describe("SignInDialog", () => {
     render(
       <SignInDialog
         sessionName="Main"
-        identityPort={9443}
+        authUrl="https://127.0.0.1:9443"
         identities={[identity("ale"), identity("uitest")]}
         onDone={() => {}}
         onCancel={() => {}}
@@ -55,7 +55,7 @@ describe("SignInDialog", () => {
     render(
       <SignInDialog
         sessionName="Main"
-        identityPort={9443}
+        authUrl="https://127.0.0.1:9443"
         identities={[identity("ale")]}
         onDone={() => {}}
         onCancel={() => {}}
@@ -69,7 +69,7 @@ describe("SignInDialog", () => {
     render(
       <SignInDialog
         sessionName="Main"
-        identityPort={9443}
+        authUrl="https://127.0.0.1:9443"
         identities={[identity("ale")]}
         onDone={() => {}}
         onCancel={() => {}}
@@ -85,7 +85,7 @@ describe("SignInDialog", () => {
     render(
       <SignInDialog
         sessionName="Main"
-        identityPort={9443}
+        authUrl="https://127.0.0.1:9443"
         identities={[identity("ale")]}
         canSignIn={false}
         onDone={() => {}}
@@ -105,7 +105,7 @@ describe("SignInDialog", () => {
     render(
       <SignInDialog
         sessionName="Main"
-        identityPort={9443}
+        authUrl="https://127.0.0.1:9443"
         identities={[identity("ale"), identity("uitest")]}
         onDone={onDone}
         onCancel={() => {}}
@@ -120,18 +120,18 @@ describe("SignInDialog", () => {
   it("prefills the auth URL from the session's identity port", () => {
     // The field people get wrong: `lore` files the token under this exact string and looks
     // it up by it later, so a guess here fails much later and for no obvious reason.
-    render(<SignInDialog sessionName="Main" identityPort={9443} onDone={() => {}} onCancel={() => {}} />);
+    render(<SignInDialog sessionName="Main" authUrl="https://127.0.0.1:9443" onDone={() => {}} onCancel={() => {}} />);
     expect(screen.getByDisplayValue("https://127.0.0.1:9443")).toBeTruthy();
   });
 
   it("will not send an empty token", () => {
-    render(<SignInDialog sessionName="Main" identityPort={9443} onDone={() => {}} onCancel={() => {}} />);
+    render(<SignInDialog sessionName="Main" authUrl="https://127.0.0.1:9443" onDone={() => {}} onCancel={() => {}} />);
     const btn = screen.getByRole("button", { name: /^sign in$/i }) as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
   });
 
   it("says what was pasted before it is sent", () => {
-    render(<SignInDialog sessionName="Main" identityPort={9443} onDone={() => {}} onCancel={() => {}} />);
+    render(<SignInDialog sessionName="Main" authUrl="https://127.0.0.1:9443" onDone={() => {}} onCancel={() => {}} />);
     paste(jwt({ name: "ale", exp: Date.now() / 1000 + 7200 }));
     expect(screen.getByText(/for ale · valid 2h/i)).toBeTruthy();
   });
@@ -139,7 +139,7 @@ describe("SignInDialog", () => {
   it("warns about an already-expired token without blocking it", () => {
     // The likely mistake: the token in the chat window is the old one. Saying so is worth
     // more than refusing — the host is what decides whether a token is good.
-    render(<SignInDialog sessionName="Main" identityPort={9443} onDone={() => {}} onCancel={() => {}} />);
+    render(<SignInDialog sessionName="Main" authUrl="https://127.0.0.1:9443" onDone={() => {}} onCancel={() => {}} />);
     paste(jwt({ name: "ale", exp: Date.now() / 1000 - 60 }));
     expect(screen.getByText(/already expired/i)).toBeTruthy();
     expect((screen.getByRole("button", { name: /^sign in$/i }) as HTMLButtonElement).disabled).toBe(false);
@@ -148,7 +148,7 @@ describe("SignInDialog", () => {
   it("sends the token, its type and the auth URL, and reports success", async () => {
     mockInvoke.mockResolvedValue("");
     const onDone = vi.fn();
-    render(<SignInDialog sessionName="Main" identityPort={9443} onDone={onDone} onCancel={() => {}} />);
+    render(<SignInDialog sessionName="Main" authUrl="https://127.0.0.1:9443" onDone={onDone} onCancel={() => {}} />);
 
     const token = jwt({ name: "ale", exp: Date.now() / 1000 + 3600 });
     paste(token);
@@ -169,7 +169,7 @@ describe("SignInDialog", () => {
     mockInvoke.mockImplementation(() => {
       throw "`lore auth login` failed: invalid token signature";
     });
-    render(<SignInDialog sessionName="Main" identityPort={9443} onDone={() => {}} onCancel={() => {}} />);
+    render(<SignInDialog sessionName="Main" authUrl="https://127.0.0.1:9443" onDone={() => {}} onCancel={() => {}} />);
 
     paste(jwt({ exp: Date.now() / 1000 + 3600 }));
     fireEvent.click(screen.getByRole("button", { name: /^sign in$/i }));
@@ -184,7 +184,7 @@ describe("SignInDialog", () => {
       throw "nope";
     });
     const onDone = vi.fn();
-    render(<SignInDialog sessionName="Main" identityPort={9443} onDone={onDone} onCancel={() => {}} />);
+    render(<SignInDialog sessionName="Main" authUrl="https://127.0.0.1:9443" onDone={onDone} onCancel={() => {}} />);
 
     paste(jwt({ exp: Date.now() / 1000 + 3600 }));
     fireEvent.click(screen.getByRole("button", { name: /^sign in$/i }));

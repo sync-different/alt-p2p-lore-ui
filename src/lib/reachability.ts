@@ -9,66 +9,98 @@
  *
  * which reads as a network fault. It is not: the tunnel is healthy and listening elsewhere.
  *
- * **The question is about the machine, not the tab.** `lore` dials a loopback port; it has no
- * idea which session is on screen. So a repository is reachable when *any* live tunnel
- * forwards its port — being on a different tab changes nothing. An earlier version asked only
- * about the active tab and warned about a setup that worked perfectly.
+ * **The question is about the machine, not the tab.** `lore` dials a URL; it has no idea which
+ * session is on screen. So a repository is reachable when *any* host serves that URL — being
+ * on a different tab changes nothing. An earlier version asked only about the active tab and
+ * warned about a setup that worked perfectly.
+ *
+ * **And the question is about a URL, not a port.** Matching on the loopback port alone made
+ * every host on 41337 the same host, which is only true while the transport is a tunnel. A
+ * host reached directly has a hostname, and that is what distinguishes it.
  */
 
-export interface Tunnel {
-  sessionName: string;
-  /** The local port this tunnel forwards loreserver on. */
-  port: number;
-  connected: boolean;
+/**
+ * A host that could serve a working copy, whatever the transport.
+ *
+ * P2P and direct hosts differ only in what makes them available: a running tunnel, or being
+ * configured at all. Past that point the question is the same — does this host's URL match
+ * the one the repository dials?
+ */
+export interface ServingHost {
+  name: string;
+  /** The URL its working copies dial, e.g. `grpc://127.0.0.1:41400`. */
+  baseUrl: string;
+  /** For P2P, a live tunnel. For direct, whether it is configured (and reachable if probed). */
+  available: boolean;
+  /** False for a direct host, where there is nothing to connect. */
+  isP2p: boolean;
 }
 
 export interface Reach {
   state: "ok" | "port_mismatch" | "not_connected" | "no_remote" | "unknown";
   message?: string;
-  repoPort?: number;
+  repoUrl?: string;
   /** The session carrying this repository's traffic, when one is. */
   servedBy?: string;
 }
 
 export function reachability(opts: {
-  remotePort?: number | null;
-  /** Every tunnel the app knows about, whatever tab is on screen. */
-  tunnels?: Tunnel[];
+  /** What the working copy dials, verbatim from `.lore/config.toml`. */
+  remoteUrl?: string | null;
+  /** Every host the app knows about, of either kind. */
+  hosts?: ServingHost[];
 }): Reach {
-  const { remotePort, tunnels = [] } = opts;
+  const { remoteUrl, hosts = [] } = opts;
 
   // A repository created locally has no remote; nothing to reach, nothing to warn about.
-  if (remotePort == null) return { state: "no_remote" };
+  const wanted = authority(remoteUrl);
+  if (!wanted) return { state: "no_remote" };
 
-  const live = tunnels.filter((t) => t.connected);
-  const serving = live.find((t) => t.port === remotePort);
+  const matching = hosts.filter((h) => authority(h.baseUrl) === wanted);
+  const serving = matching.find((h) => h.available);
   if (serving) {
-    return { state: "ok", repoPort: remotePort, servedBy: serving.sessionName };
+    return { state: "ok", repoUrl: remoteUrl!, servedBy: serving.name };
   }
 
-  if (live.length === 0) {
+  // A host is configured for this URL but is not up. For P2P that is a connection; for a
+  // direct host it means it did not answer — different remedies, so different sentences.
+  if (matching.length > 0) {
+    const h = matching[0];
     return {
       state: "not_connected",
-      repoPort: remotePort,
-      message: `This repository talks to port ${remotePort}. Connect the session that forwards it.`,
+      repoUrl: remoteUrl!,
+      message: h.isP2p
+        ? `This repository is served by “${h.name}”, which is not connected. Connect it.`
+        : `“${h.name}” did not answer at ${h.baseUrl}. Check the host is running and reachable.`,
     };
   }
 
-  // Connected, but nothing on the port this repository dials.
-  const ports = [...new Set(live.map((t) => t.port))].sort((a, b) => a - b);
-  const names = live.map((t) => `“${t.sessionName}”`).join(", ");
+  // Nothing knows this URL at all.
+  const available = hosts.filter((h) => h.available);
+  if (available.length === 0) {
+    return {
+      state: "not_connected",
+      repoUrl: remoteUrl!,
+      message: `This repository talks to ${wanted}, and no host here serves it. Add or connect one.`,
+    };
+  }
   return {
     state: "port_mismatch",
-    repoPort: remotePort,
-    // Both numbers named, and both ways out given: the fix is either a different session or a
-    // different local port, and which is right depends on whether they reach the same host —
-    // something only the user knows.
+    repoUrl: remoteUrl!,
+    // Both sides named, because the fix is either a different host or a different address,
+    // and which is right depends on what the user knows about their setup.
     message:
-      `This repository talks to port ${remotePort}, but ${names} ` +
-      `${live.length === 1 ? "forwards" : "forward"} ${ports.join(", ")}. ` +
-      `Connect the session that forwards ${remotePort}, or set a connected session's local ` +
-      `port to ${remotePort} if it reaches the same host — then reconnect it.`,
+      `This repository talks to ${wanted}, but the hosts that are up serve ` +
+      `${available.map((h) => authority(h.baseUrl)).join(", ")}. ` +
+      `Connect the host that serves ${wanted}, or point that host at it — then reconnect.`,
   };
+}
+
+/** `host:port` from a URL: what decides whether two URLs mean the same host. */
+function authority(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const rest = url.includes("://") ? url.split("://")[1] : url;
+  return rest.split("/")[0].trim() || null;
 }
 
 /** Errors that mean "nothing answered", as lore phrases them. */

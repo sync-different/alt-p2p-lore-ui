@@ -59,16 +59,27 @@ export function HostBar({
       )}
 
       {hosts.map((h) => {
+        // A direct host has nothing to connect: it is an address that either answers or does
+        // not, and finding out is the job of the next operation rather than a button.
+        const direct = (h.kind ?? "p2p") === "direct";
         const t = tunnelFor(h.session_id);
-        const status = phaseToStatus(t?.phase, t?.mode);
+        const status = direct ? "connected" : phaseToStatus(t?.phase, t?.mode);
         const live = status === "connected" || status === "relay";
         const busy = status === "connecting";
         return (
           <span key={h.id} className="flex items-center gap-1.5">
-            <span className={`h-2 w-2 shrink-0 rounded-full ${DOT[status]}`} aria-hidden />
-            <span className="text-ink-1" title={`${h.name} — ${WORD[status]}`}>
+            <span
+              className={`h-2 w-2 shrink-0 rounded-full ${direct ? "bg-ok/60" : DOT[status]}`}
+              aria-hidden
+            />
+            <span
+              className="text-ink-1"
+              title={direct ? `${h.name} — direct, ${h.base_url ?? ""}` : `${h.name} — ${WORD[status]}`}
+            >
               {h.name}
+              {direct && <span className="text-ink-2"> · direct</span>}
             </span>
+            {!direct && (
             <button
               onClick={() => (live ? onDisconnect(h) : onConnect(h))}
               disabled={busy}
@@ -80,6 +91,7 @@ export function HostBar({
             >
               {live ? "Disconnect" : busy ? "…" : "Connect"}
             </button>
+            )}
             <button
               onClick={() => onEdit(h)}
               aria-label={`Settings for ${h.name}`}

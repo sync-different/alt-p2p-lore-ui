@@ -18,6 +18,22 @@ use std::path::PathBuf;
 /// Keychain service name. One entry per session, keyed by session id.
 const KEYRING_SERVICE: &str = "com.alterante.lore.ui";
 
+/// How a host is reached.
+///
+/// The tunnel's only job is to make a remote host appear at `127.0.0.1:<port>`; everything
+/// downstream — a working copy's `remote_url`, the token store's keys, `repository list` —
+/// speaks URLs. Treating transport as a *kind* rather than as the organising principle is
+/// what lets the same app work against a LAN loreserver with no coordinator at all.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HostKind {
+    /// Reached through an alt-p2p tunnel this app starts.
+    #[default]
+    P2p,
+    /// Reached directly at a URL. Nothing to connect; either it answers or it does not.
+    Direct,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct SessionConfig {
     /// Stable id for this saved session (ours, not alt-p2p's).
@@ -35,6 +51,42 @@ pub struct SessionConfig {
     pub identity_port: Option<u16>,
     #[serde(default = "default_true")]
     pub allow_relay: bool,
+
+    /// Defaults to `P2p`, so configurations written before direct hosts existed keep working
+    /// without a migration step that could lose the one file that cannot be reconstructed.
+    #[serde(default)]
+    pub kind: HostKind,
+    /// Where this host's loreserver is, for a direct host: `grpc://host:port`.
+    ///
+    /// Absent for a P2P host, where it is *derived* from the forwarded port — one answer,
+    /// not two to keep in step.
+    #[serde(default)]
+    pub base_url: Option<String>,
+    /// Where this host's tokens are filed, for a direct host: the auth URL it advertises.
+    /// Absent for a P2P host, where it is derived from the identity port.
+    #[serde(default)]
+    pub auth_url: Option<String>,
+}
+
+impl SessionConfig {
+    /// The URL a working copy on this host dials — the identity of a host.
+    ///
+    /// For P2P this is the loopback port the tunnel forwards, which is why two P2P hosts
+    /// cannot share a local port; for a direct host it is whatever was configured.
+    pub fn base_url(&self) -> String {
+        match self.kind {
+            HostKind::Direct => self.base_url.clone().unwrap_or_default(),
+            HostKind::P2p => format!("grpc://127.0.0.1:{}", self.loreserver_port),
+        }
+    }
+
+    /// Where this host's tokens are filed, if it requires signing in at all.
+    pub fn auth_url(&self) -> Option<String> {
+        match self.kind {
+            HostKind::Direct => self.auth_url.clone().filter(|u| !u.trim().is_empty()),
+            HostKind::P2p => self.identity_port.map(|p| format!("https://127.0.0.1:{p}")),
+        }
+    }
 }
 
 fn default_true() -> bool {
@@ -200,6 +252,9 @@ mod tests {
             loreserver_port: 41400,
             identity_port: Some(9443),
             allow_relay: true,
+            kind: HostKind::P2p,
+            base_url: None,
+            auth_url: None,
         }
     }
 
@@ -230,6 +285,53 @@ mod tests {
     }
 
     #[test]
+    fn a_config_written_before_direct_hosts_existed_still_loads_as_p2p() {
+        // The one file that cannot be reconstructed from anywhere else. A new field must
+        // default rather than require a migration.
+        let old = r#"{"id":"s1","name":"main","session_id":"lore-x","server":"c:9000",
+                      "loreserver_port":41400,"identity_port":9443,"allow_relay":true}"#;
+        let cfg: SessionConfig = serde_json::from_str(old).expect("old configs must still load");
+
+        assert_eq!(cfg.kind, HostKind::P2p);
+        assert_eq!(cfg.base_url(), "grpc://127.0.0.1:41400");
+        assert_eq!(cfg.auth_url().as_deref(), Some("https://127.0.0.1:9443"));
+    }
+
+    #[test]
+    fn a_p2p_host_derives_its_urls_rather_than_storing_them() {
+        // Deriving is the point: a stored copy would be a second answer to drift from the
+        // ports that actually get forwarded.
+        let cfg = cfg("s1", "main", "lore-x");
+        assert_eq!(cfg.base_url(), "grpc://127.0.0.1:41400");
+        assert_eq!(cfg.auth_url().as_deref(), Some("https://127.0.0.1:9443"));
+    }
+
+    #[test]
+    fn a_direct_host_uses_the_urls_it_was_given() {
+        let cfg = SessionConfig {
+            kind: HostKind::Direct,
+            base_url: Some("grpc://lore.example:41337".into()),
+            auth_url: Some("https://identity.example:9443".into()),
+            ..cfg("s2", "studio", "unused")
+        };
+        assert_eq!(cfg.base_url(), "grpc://lore.example:41337");
+        assert_eq!(cfg.auth_url().as_deref(), Some("https://identity.example:9443"));
+    }
+
+    #[test]
+    fn a_direct_host_without_an_auth_url_needs_no_sign_in() {
+        // A blank string is not an auth URL; treating it as one would file tokens under ""
+        // and put a sign-in prompt on a host that never asked for one.
+        let cfg = SessionConfig {
+            kind: HostKind::Direct,
+            base_url: Some("grpc://127.0.0.1:51337".into()),
+            auth_url: Some("   ".into()),
+            ..cfg("s3", "local", "unused")
+        };
+        assert_eq!(cfg.auth_url(), None);
+    }
+
+    #[test]
     fn a_session_round_trips_through_json_without_its_key() {
         let s = SessionConfig {
             id: "s1".into(),
@@ -239,6 +341,9 @@ mod tests {
             loreserver_port: 41400,
             identity_port: Some(9443),
             allow_relay: true,
+            kind: HostKind::P2p,
+            base_url: None,
+            auth_url: None,
         };
         let text = serde_json::to_string(&s).unwrap();
         // The proof that matters: nothing secret is in the serialised form, because the

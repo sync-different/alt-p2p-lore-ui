@@ -47,10 +47,10 @@ interface Progress {
 export interface CloneHost {
   id: string;
   name: string;
-  /** The loopback port its loreserver is forwarded to. */
-  port: number;
-  /** Its identity port, which decides *which* identity store applies. */
-  identityPort: number | null;
+  /** Where its repositories live, e.g. `grpc://127.0.0.1:41400` — derived for P2P, given for direct. */
+  baseUrl: string;
+  /** Where its tokens are filed, deciding which identities apply. Null when it needs none. */
+  authUrl: string | null;
 }
 
 export function CloneDialog({
@@ -129,7 +129,7 @@ export function CloneDialog({
 
   // One id per dialog, so two clones at once cannot read each other's progress.
   const id = useMemo(() => `c${Math.random().toString(36).slice(2, 10)}`, []);
-  const url = `grpc://127.0.0.1:${host?.port ?? 41400}/${repo.trim()}`;
+  const url = `${host?.baseUrl ?? ""}/${repo.trim()}`;
 
   useEffect(() => {
     const un = listen<Progress>("clone://progress", (e) => {
@@ -166,13 +166,13 @@ export function CloneDialog({
   // the same host shows different repositories to different people.
   // Identities are filed per auth URL, so switching host can change who you may act as.
   useEffect(() => {
-    if (host?.identityPort == null) {
+    if (!host?.authUrl) {
       setIdentities([]);
       return;
     }
     let live = true;
     invoke<{ identities: AuthIdentity[] }>("auth_status", {
-      identityPort: host.identityPort,
+      authUrl: host.authUrl,
       identity: null,
       nowMs: Date.now(),
     })
@@ -181,7 +181,7 @@ export function CloneDialog({
     return () => {
       live = false;
     };
-  }, [host?.identityPort]);
+  }, [host?.authUrl]);
 
   useEffect(() => {
     if (host == null) return;
@@ -190,7 +190,7 @@ export function CloneDialog({
     setListError(null);
     setRepo("");
     invoke<RemoteRepo[]>("list_repositories", {
-      url: `grpc://127.0.0.1:${host.port}`,
+      url: host.baseUrl,
       identity: identity || null,
     })
       .then((list) => {
@@ -204,7 +204,7 @@ export function CloneDialog({
     return () => {
       live = false;
     };
-  }, [host?.port, identity]);
+  }, [host?.baseUrl, identity]);
 
   const pick = async () => {
     const chosen = await openDialog({ directory: true, multiple: false, title: "Clone into…" });
@@ -278,7 +278,7 @@ export function CloneDialog({
               >
                 {hosts.map((h) => (
                   <option key={h.id} value={h.id}>
-                    {h.name} · port {h.port}
+                    {h.name} · {h.baseUrl}
                   </option>
                 ))}
               </select>

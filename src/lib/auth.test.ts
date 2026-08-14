@@ -253,15 +253,15 @@ describe("identities are per host, not global", () => {
   });
 
   it("answers for one host and never for another", () => {
-    expect(identitiesAt(store, 9443)).toEqual(["u-ale", "u-uitest"]);
-    expect(identitiesAt(store, 9444)).toEqual(["u-studio"]);
+    expect(identitiesAt(store, "https://127.0.0.1:9443")).toEqual(["u-ale", "u-uitest"]);
+    expect(identitiesAt(store, "https://127.0.0.1:9444")).toEqual(["u-studio"]);
   });
 
   it("does not count a resource token as an identity", () => {
     // It is derived authorization, not a sign-in; counting it would report someone signed in
     // whose identity token had gone.
-    expect(identitiesAt(store, 9443)).not.toContain("u-ale-resource");
-    expect(identitiesAt(store, 9443).filter((x) => x === "u-ale")).toHaveLength(1);
+    expect(identitiesAt(store, "https://127.0.0.1:9443")).not.toContain("u-ale-resource");
+    expect(identitiesAt(store, "https://127.0.0.1:9443").filter((x) => x === "u-ale")).toHaveLength(1);
   });
 
   it("knows nothing about a host with no identity port", () => {
@@ -289,8 +289,8 @@ describe("naming an identity is not the same question as membership", () => {
   it("still scopes membership to one host", () => {
     // The split that matters: a name is a label and comes from anywhere; being signed in is
     // per auth URL and must not.
-    expect(identitiesAt(store, 9443)).toEqual(["u-87c4", "u-99f5"]);
-    expect(identitiesAt(store, 9444)).toEqual([]);
+    expect(identitiesAt(store, "https://127.0.0.1:9443")).toEqual(["u-87c4", "u-99f5"]);
+    expect(identitiesAt(store, "https://127.0.0.1:9444")).toEqual([]);
   });
 
   it("falls back to the id rather than showing nothing", () => {

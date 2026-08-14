@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { displayLabels, siblingsOf, workspaceHealth, type WorkspaceSummary } from "./workspaces";
-import type { Tunnel } from "./reachability";
+import type { ServingHost } from "./reachability";
 
 /**
  * "Can I work here?" — a question about the repository, not about which tab is selected.
@@ -23,10 +23,11 @@ const ws = (over: Partial<WorkspaceSummary> = {}): WorkspaceSummary => ({
   ...over,
 });
 
-const tunnel = (port: number, connected = true): Tunnel => ({
-  sessionName: "main",
-  port,
-  connected,
+const tunnel = (port: number, available = true): ServingHost => ({
+  name: "main",
+  baseUrl: `grpc://127.0.0.1:${port}`,
+  available,
+  isP2p: true,
 });
 
 describe("workspaceHealth", () => {
@@ -36,7 +37,7 @@ describe("workspaceHealth", () => {
 
   it("is ready even though the tunnel belongs to a different host", () => {
     // The whole point: lore dials a loopback port and cannot see tabs.
-    const other: Tunnel = { sessionName: "some other host", port: 41400, connected: true };
+    const other: ServingHost = { name: "some other host", baseUrl: "grpc://127.0.0.1:41400", available: true, isP2p: true };
     expect(workspaceHealth(ws(), [other], [])).toBe("ready");
   });
 

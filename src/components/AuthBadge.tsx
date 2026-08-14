@@ -31,7 +31,7 @@ export function AuthBadge({
    * gates one button, not the badge.
    */
   connected = false,
-  identityPort,
+  authUrl,
   pinnedIdentity,
   hostName,
   onSignIn,
@@ -41,8 +41,8 @@ export function AuthBadge({
   error?: string | null;
   /** Sign-in state is only meaningful once the host is reachable. */
   connected?: boolean;
-  /** Null when this session has no identity port set. */
-  identityPort?: number | null;
+  /** Where this host's tokens are filed. Null when it needs no sign-in at all. */
+  authUrl?: string | null;
   /** The identity the active workspace acts as, when it is pinned to one. */
   pinnedIdentity?: string | null;
   /**
@@ -59,15 +59,15 @@ export function AuthBadge({
   // A session with no identity port cannot sign in to anything. Saying so is better than
   // showing nothing — an empty toolbar reads as a broken feature, and this is the one place
   // someone would look to find out that the port is missing.
-  if (identityPort == null) {
+  if (authUrl == null) {
     return (
       <button
         onClick={onConfigure}
         className={`flex items-center gap-1.5 text-[11px] ${TONE.idle} hover:text-ink-0`}
         title={
-          "This session has no identity port set, so it cannot sign in.\n" +
-          "If the host requires signing in, add its identity port in session settings — " +
-          "it must match the port in the host's auth_url exactly."
+          "This host has no auth URL, so there is nothing to sign in to.\n" +
+          "If it does require signing in, add its auth URL in host settings — for a P2P host " +
+          "that is the identity port, and it must match the host's auth_url exactly."
         }
       >
         <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${DOT.idle}`} aria-hidden />

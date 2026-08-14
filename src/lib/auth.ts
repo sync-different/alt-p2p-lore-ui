@@ -190,13 +190,25 @@ export function portOfAuthUrl(url: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-/** The identities signed in at one host's auth URL. Resource tokens are not identities. */
-export function identitiesAt(all: AuthIdentity[], identityPort: number | null | undefined): string[] {
-  if (identityPort == null) return [];
+/**
+ * The identities signed in at one host's auth URL. Resource tokens are not identities.
+ *
+ * Keyed by the auth URL itself, which is how `lore` keys `tokens.toml` — not by a loopback
+ * port, which only distinguishes hosts while the transport happens to be a tunnel.
+ */
+export function identitiesAt(all: AuthIdentity[], authUrl: string | null | undefined): string[] {
+  const wanted = authorityOfUrl(authUrl);
+  if (!wanted) return [];
   return all
-    .filter((i) => !i.resource && portOfAuthUrl(i.auth_url) === identityPort)
+    .filter((i) => !i.resource && authorityOfUrl(i.auth_url) === wanted)
     .map((i) => i.user_id ?? "")
     .filter(Boolean);
+}
+
+function authorityOfUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const rest = url.includes("://") ? url.split("://")[1] : url;
+  return rest.split("/")[0].trim() || null;
 }
 
 /** Prefer a name over an opaque id when we hold one. */

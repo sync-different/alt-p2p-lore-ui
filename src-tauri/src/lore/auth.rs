@@ -134,10 +134,18 @@ pub fn parse_auth_list(text: &str) -> Vec<AuthIdentity> {
 ///
 /// Only unscoped (authentication) tokens are returned. A resource token is derived from one
 /// of these without a sign-in, so its expiry stops one repository rather than the session.
-pub fn for_identity_port(list: &[AuthIdentity], port: u16) -> Vec<&AuthIdentity> {
+pub fn for_auth_url<'a>(list: &'a [AuthIdentity], auth_url: &str) -> Vec<&'a AuthIdentity> {
+    let wanted = authority_of(auth_url);
     list.iter()
-        .filter(|i| i.loopback_port() == Some(port) && i.resource.is_none())
+        .filter(|i| i.resource.is_none() && authority_of(&i.auth_url) == wanted)
         .collect()
+}
+
+/// `host:port`, which is what decides whether two URLs mean the same store. Compared rather
+/// than the whole string because the two are written by different programs.
+fn authority_of(url: &str) -> String {
+    let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    rest.split('/').next().unwrap_or("").trim().to_string()
 }
 
 /// Expiry for a set of identities, taking the **soonest**.
@@ -306,7 +314,7 @@ fn neutral_cwd(app: &AppHandle) -> PathBuf {
 #[tauri::command]
 pub async fn auth_status(
     app: AppHandle,
-    identity_port: Option<u16>,
+    auth_url: Option<String>,
     identity: Option<String>,
     now_ms: i64,
 ) -> Result<AuthStatus, String> {
@@ -318,17 +326,18 @@ pub async fn auth_status(
     let all = parse_auth_list(&out.stdout);
     // A session with no identity port needs no sign-in at all — reporting Missing there
     // would put a warning on a host that never asked for one.
-    let identities: Vec<AuthIdentity> = identity_port
-        .map(|p| for_identity_port(&all, p).into_iter().cloned().collect())
+    let identities: Vec<AuthIdentity> = auth_url
+        .as_deref()
+        .map(|u| for_auth_url(&all, u).into_iter().cloned().collect())
         .unwrap_or_default();
-    let expiry = match (identity_port, identity.as_deref()) {
+    let expiry = match (auth_url.as_deref(), identity.as_deref()) {
         // Pinned: one identity's clock, and Missing when it is not signed in at all — which
         // is the state that makes every call fail with "No token stored".
-        (Some(p), Some(id)) => classify(
-            for_identity_port(&all, p).into_iter().find(|i| i.user_id.as_deref() == Some(id)),
+        (Some(u), Some(id)) => classify(
+            for_auth_url(&all, u).into_iter().find(|i| i.user_id.as_deref() == Some(id)),
             now_ms,
         ),
-        (Some(p), None) => classify_all(&for_identity_port(&all, p), now_ms),
+        (Some(u), None) => classify_all(&for_auth_url(&all, u), now_ms),
         (None, _) => Expiry::Missing,
     };
     Ok(AuthStatus { identities, expiry, all })
@@ -525,10 +534,10 @@ mod tests {
     #[test]
     fn a_session_finds_its_own_host_by_identity_port() {
         let list = parse_auth_list(&fixture("auth_list_two_hosts.txt"));
-        assert_eq!(for_identity_port(&list, 9443)[0].user.as_deref(), Some("ale"));
-        assert_eq!(for_identity_port(&list, 9444)[0].user.as_deref(), Some("daniel"));
+        assert_eq!(for_auth_url(&list, "https://127.0.0.1:9443")[0].user.as_deref(), Some("ale"));
+        assert_eq!(for_auth_url(&list, "https://127.0.0.1:9444")[0].user.as_deref(), Some("daniel"));
         // A session whose host we hold no token for must not borrow another's.
-        assert!(for_identity_port(&list, 9445).is_empty());
+        assert!(for_auth_url(&list, "https://127.0.0.1:9445").is_empty());
     }
 
     #[test]
@@ -536,7 +545,7 @@ mod tests {
         // Both are filed under the same URL. The unscoped one is what ends the session when
         // it expires; a resource token is refreshed from it without a sign-in.
         let list = parse_auth_list(&fixture("auth_list_typical.txt"));
-        let ids = for_identity_port(&list, 9443);
+        let ids = for_auth_url(&list, "https://127.0.0.1:9443");
         assert_eq!(ids.len(), 1);
         assert_eq!(ids[0].resource, None);
     }
@@ -548,7 +557,7 @@ mod tests {
         // earlier single-identity model picked whichever came first and so reported the
         // wrong user after a sign-in that had actually succeeded.
         let list = parse_auth_list(&fixture("auth_list_two_users.txt"));
-        let ids = for_identity_port(&list, 9443);
+        let ids = for_auth_url(&list, "https://127.0.0.1:9443");
         let users: Vec<_> = ids.iter().filter_map(|i| i.user.as_deref()).collect();
         assert_eq!(users, vec!["ale", "uitest"]);
     }
@@ -559,7 +568,7 @@ mod tests {
         // runs out first. Reporting the later one would show green while the identity
         // actually in use had expired.
         let list = parse_auth_list(&fixture("auth_list_two_users.txt"));
-        let ids = for_identity_port(&list, 9443);
+        let ids = for_auth_url(&list, "https://127.0.0.1:9443");
         // 05:11 (ale) is before 07:49 (uitest); at 04:30 that is 41 minutes away.
         let now = 1_786_684_312_000 - 41 * 60_000;
         assert_eq!(classify_all(&ids, now), Expiry::Soon(41));
@@ -571,7 +580,7 @@ mod tests {
         // "ale, uitest — ale expires in 5h52m". ale's clock is nothing to do with work that
         // acts as uitest.
         let list = parse_auth_list(&fixture("auth_list_two_users.txt"));
-        let ids = for_identity_port(&list, 9443);
+        let ids = for_auth_url(&list, "https://127.0.0.1:9443");
         let uitest = ids.iter().find(|i| i.user.as_deref() == Some("uitest")).copied();
         let ale = ids.iter().find(|i| i.user.as_deref() == Some("ale")).copied();
 
@@ -587,7 +596,7 @@ mod tests {
     fn a_pin_to_someone_not_signed_in_is_missing() {
         // The state behind "No token stored": pinned to a user whose token is gone.
         let list = parse_auth_list(&fixture("auth_list_two_users.txt"));
-        let ids = for_identity_port(&list, 9443);
+        let ids = for_auth_url(&list, "https://127.0.0.1:9443");
         let absent = ids.iter().find(|i| i.user.as_deref() == Some("nobody")).copied();
         assert_eq!(classify(absent, 0), Expiry::Missing);
     }
@@ -599,7 +608,7 @@ mod tests {
             "Auth URL: https://127.0.0.1:9443\n  User: a (u-1)\n  Expires: Fri, 14 Aug 2026 05:11:52 +0000\n\
              Auth URL: https://127.0.0.1:9443\n  User: b (u-2)\n  Expires: whenever\n",
         );
-        let ids = for_identity_port(&list, 9443);
+        let ids = for_auth_url(&list, "https://127.0.0.1:9443");
         assert_eq!(ids.len(), 2);
         assert_eq!(classify_all(&ids, 0), Expiry::Unknown);
     }
@@ -612,7 +621,7 @@ mod tests {
     #[test]
     fn expiry_is_classified_by_how_long_is_left() {
         let list = parse_auth_list(&fixture("auth_list_typical.txt"));
-        let id = for_identity_port(&list, 9443)[0];
+        let id = for_auth_url(&list, "https://127.0.0.1:9443")[0];
 
         assert!(matches!(classify(Some(id), AUG_14 - 5 * 3_600_000), Expiry::Valid(_)));
         assert_eq!(classify(Some(id), AUG_14 - 30 * 60_000), Expiry::Soon(30));
@@ -624,7 +633,7 @@ mod tests {
         // Exactly at the threshold, and one minute inside it, both warn. Erring the other
         // way means the last warning before expiry is a green one.
         let list = parse_auth_list(&fixture("auth_list_typical.txt"));
-        let id = for_identity_port(&list, 9443)[0];
+        let id = for_auth_url(&list, "https://127.0.0.1:9443")[0];
         assert_eq!(classify(Some(id), AUG_14 - WARN_WITHIN_MINUTES * 60_000), Expiry::Soon(60));
         assert!(matches!(
             classify(Some(id), AUG_14 - (WARN_WITHIN_MINUTES + 1) * 60_000),
@@ -635,7 +644,7 @@ mod tests {
     #[test]
     fn an_already_expired_token_reports_expired() {
         let list = parse_auth_list(&fixture("auth_list_expired.txt"));
-        let id = for_identity_port(&list, 9443)[0];
+        let id = for_auth_url(&list, "https://127.0.0.1:9443")[0];
         assert!(matches!(classify(Some(id), AUG_14), Expiry::Expired(_)));
     }
 

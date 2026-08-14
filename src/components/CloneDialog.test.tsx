@@ -21,7 +21,12 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => mockInvoke
 vi.mock("@tauri-apps/api/event", () => ({ listen: () => Promise.resolve(() => {}) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: () => Promise.resolve("/work/new") }));
 
-const oneHost = { id: "h1", name: "main", port: 41400, identityPort: 9443 };
+const oneHost = {
+  id: "h1",
+  name: "main",
+  baseUrl: "grpc://127.0.0.1:41400",
+  authUrl: "https://127.0.0.1:9443",
+};
 
 const identities = [
   { auth_url: "u", resource: null, user: "ale", user_id: "u-ale", domains: [], expires_raw: null, expires_ms: null },
@@ -79,7 +84,7 @@ describe("CloneDialog", () => {
   });
 
   it("builds the address from the connected host's port", () => {
-    render(<CloneDialog hosts={[{ ...oneHost, port: 41501 }]} onCloned={() => {}} onCancel={() => {}} />);
+    render(<CloneDialog hosts={[{ ...oneHost, baseUrl: "grpc://127.0.0.1:41501" }]} onCloned={() => {}} onCancel={() => {}} />);
     type(/^demo$/, "demo");
     expect(screen.getByText("grpc://127.0.0.1:41501/demo")).toBeTruthy();
   });
@@ -101,27 +106,27 @@ describe("CloneDialog", () => {
     answersWith([{ name: "demo", id: "019f9e" }]);
     render(
       <CloneDialog
-        hosts={[oneHost, { id: "h2", name: "studio", port: 41600, identityPort: 9444 }]}
+        hosts={[oneHost, { id: "h2", name: "studio", baseUrl: "grpc://127.0.0.1:41600", authUrl: "https://127.0.0.1:9444" }]}
         onCloned={() => {}}
         onCancel={() => {}}
       />,
     );
-    await waitFor(() => expect(screen.getByRole("option", { name: /main · port 41400/ })).toBeTruthy());
-    expect(screen.getByRole("option", { name: /studio · port 41600/ })).toBeTruthy();
+    await waitFor(() => expect(screen.getByRole("option", { name: /main · grpc:\/\/127.0.0.1:41400/ })).toBeTruthy());
+    expect(screen.getByRole("option", { name: /studio · grpc:\/\/127.0.0.1:41600/ })).toBeTruthy();
   });
 
   it("asks nothing when there is only one host", async () => {
     answersWith([{ name: "demo", id: "019f9e" }]);
     render(<CloneDialog hosts={[oneHost]} onCloned={() => {}} onCancel={() => {}} />);
     await waitFor(() => expect(screen.getByRole("option", { name: "demo" })).toBeTruthy());
-    expect(screen.queryByRole("option", { name: /port 41400/ })).toBeNull();
+    expect(screen.queryByRole("option", { name: /grpc:\/\/127.0.0.1:41400/ })).toBeNull();
   });
 
   it("re-lists against the host that is chosen", async () => {
     answersWith([{ name: "demo", id: "019f9e" }]);
     render(
       <CloneDialog
-        hosts={[oneHost, { id: "h2", name: "studio", port: 41600, identityPort: 9444 }]}
+        hosts={[oneHost, { id: "h2", name: "studio", baseUrl: "grpc://127.0.0.1:41600", authUrl: "https://127.0.0.1:9444" }]}
         onCloned={() => {}}
         onCancel={() => {}}
       />,

@@ -24,7 +24,7 @@ describe("AuthBadge", () => {
   it("still reports who is signed in while nothing is connected", () => {
     // `lore auth list` reads a local file: the answer is knowable offline, and hiding it is
     // worst exactly when someone is looking for it.
-    render(<AuthBadge status={status()} connected={false} identityPort={9443} />);
+    render(<AuthBadge status={status()} connected={false} authUrl="https://127.0.0.1:9443" />);
     expect(screen.getByText(/signed in as ale/i)).toBeTruthy();
   });
 
@@ -33,7 +33,7 @@ describe("AuthBadge", () => {
     // auth URL, not per host, so the selected host being down says nothing about whether
     // the identity store can be changed.
     const onSignIn = vi.fn();
-    render(<AuthBadge status={status()} connected={false} identityPort={9443} onSignIn={onSignIn} />);
+    render(<AuthBadge status={status()} connected={false} authUrl="https://127.0.0.1:9443" onSignIn={onSignIn} />);
     screen.getByText(/signed in as ale/i).click();
     expect(onSignIn).toHaveBeenCalled();
   });
@@ -43,7 +43,7 @@ describe("AuthBadge", () => {
       <AuthBadge
         status={status({ expiry: { state: "missing" } })}
         connected={false}
-        identityPort={9443}
+        authUrl="https://127.0.0.1:9443"
         onSignIn={() => {}}
       />,
     );
@@ -57,7 +57,7 @@ describe("AuthBadge", () => {
     // an empty toolbar — indistinguishable from a broken feature. This is the one place
     // someone would look to find out why.
     const onConfigure = vi.fn();
-    render(<AuthBadge status={null} connected identityPort={null} onConfigure={onConfigure} />);
+    render(<AuthBadge status={null} connected authUrl={null} onConfigure={onConfigure} />);
     const el = screen.getByText(/no sign-in configured/i);
     expect(el).toBeTruthy();
     expect(el.getAttribute("title")).toMatch(/identity port/i);
@@ -68,22 +68,22 @@ describe("AuthBadge", () => {
   });
 
   it("waits for a state before saying anything about a configured session", () => {
-    const { container } = render(<AuthBadge status={null} connected identityPort={9443} />);
+    const { container } = render(<AuthBadge status={null} connected authUrl="https://127.0.0.1:9443" />);
     expect(container.firstChild).toBeNull();
   });
 
   it("offers a sign-in only when one is actually needed", () => {
-    const { rerender } = render(<AuthBadge status={status()} connected identityPort={9443} onSignIn={() => {}} />);
+    const { rerender } = render(<AuthBadge status={status()} connected authUrl="https://127.0.0.1:9443" onSignIn={() => {}} />);
     expect(screen.queryByRole("button", { name: /sign in/i })).toBeNull();
 
     rerender(
-      <AuthBadge status={status({ expiry: { state: "expired", minutes: 5 } })} connected identityPort={9443} onSignIn={() => {}} />,
+      <AuthBadge status={status({ expiry: { state: "expired", minutes: 5 } })} connected authUrl="https://127.0.0.1:9443" onSignIn={() => {}} />,
     );
     expect(screen.getByRole("button", { name: /sign in/i })).toBeTruthy();
   });
 
   it("does not interrupt work that is still valid, even close to the edge", () => {
-    render(<AuthBadge status={status({ expiry: { state: "soon", minutes: 12 } })} connected identityPort={9443} onSignIn={() => {}} />);
+    render(<AuthBadge status={status({ expiry: { state: "soon", minutes: 12 } })} connected authUrl="https://127.0.0.1:9443" onSignIn={() => {}} />);
     expect(screen.getByText(/expires in 12 min/i)).toBeTruthy();
     // Still working: a sign-in button here would push people to re-authenticate mid-task.
     expect(screen.queryByRole("button", { name: /sign in/i })).toBeNull();
@@ -92,13 +92,13 @@ describe("AuthBadge", () => {
   it("distinguishes 'cannot read the state' from 'signed out'", () => {
     // Failing to read local state is a local fault. Showing it as signed-out would send
     // someone through a browser sign-in that fixes nothing.
-    render(<AuthBadge status={null} error="lore auth list failed" connected identityPort={9443} onSignIn={() => {}} />);
+    render(<AuthBadge status={null} error="lore auth list failed" connected authUrl="https://127.0.0.1:9443" onSignIn={() => {}} />);
     expect(screen.getByText(/unavailable/i)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /sign in/i })).toBeNull();
   });
 
   it("carries the exact expiry time in the hover, not just the rounded label", () => {
-    render(<AuthBadge status={status()} connected identityPort={9443} />);
+    render(<AuthBadge status={status()} connected authUrl="https://127.0.0.1:9443" />);
     const el = screen.getByText(/signed in/i);
     expect(el.getAttribute("title")).toContain("Fri, 14 Aug 2026 05:11:52 +0000");
   });
@@ -107,13 +107,13 @@ describe("AuthBadge", () => {
     // Sign-in is per auth URL and so per host. With two connected, an unlabelled badge is a
     // true statement about a store the user cannot identify.
     render(
-      <AuthBadge status={status()} connected identityPort={9443} hostName="studio" />,
+      <AuthBadge status={status()} connected authUrl="https://127.0.0.1:9443" hostName="studio" />,
     );
     expect(screen.getByText(/studio/)).toBeTruthy();
   });
 
   it("stays quiet about the host when there is nothing to disambiguate", () => {
-    render(<AuthBadge status={status()} connected identityPort={9443} />);
+    render(<AuthBadge status={status()} connected authUrl="https://127.0.0.1:9443" />);
     expect(screen.getByText(/signed in as ale/i).textContent).not.toMatch(/·.*·/);
   });
 
@@ -122,7 +122,7 @@ describe("AuthBadge", () => {
       <AuthBadge
         status={status({ identities: [identity("ale"), identity("uitest")], expiry: { state: "valid", minutes: 700 } })}
         connected
-        identityPort={9443}
+        authUrl="https://127.0.0.1:9443"
         pinnedIdentity="u-uitest"
       />,
     );
@@ -138,7 +138,7 @@ describe("AuthBadge", () => {
       <AuthBadge
         status={status({ identities: [identity("ale"), identity("uitest")] })}
         connected
-        identityPort={9443}
+        authUrl="https://127.0.0.1:9443"
       />,
     );
     // The count is gone: the label now names whose clock the countdown belongs to, which is
@@ -154,7 +154,7 @@ describe("AuthBadge", () => {
     // Both are things people do while a token still works. A control that appears only on
     // expiry cannot be used to avoid one.
     const onSignIn = vi.fn();
-    render(<AuthBadge status={status()} connected identityPort={9443} onSignIn={onSignIn} />);
+    render(<AuthBadge status={status()} connected authUrl="https://127.0.0.1:9443" onSignIn={onSignIn} />);
     screen.getByText(/signed in as ale/i).click();
     expect(onSignIn).toHaveBeenCalled();
   });

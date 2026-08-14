@@ -30,6 +30,7 @@ import {
 } from "./lib/workspaces";
 import { reachability } from "./lib/reachability";
 import { identitiesAt, nameForId } from "./lib/auth";
+import { hostAuthUrl, hostBaseUrl, hostServes } from "./lib/sessions";
 
 /**
  * M2: one real local repository, driven by the `lore` CLI.
@@ -186,15 +187,23 @@ export default function App() {
    * host disabled the control whenever the user was looking at a host other than the one
    * that was up.
    */
+  const activeAuthUrl = activeConfig ? hostAuthUrl(activeConfig) : null;
+  /**
+   * Can a sign-in happen at all?
+   *
+   * Not "is the selected host connected" — tokens are filed per auth URL, so any host serving
+   * that URL can carry the exchange. A direct host needs no tunnel at all.
+   */
   const identityServed =
-    activeConfig?.identity_port != null &&
-    [...tunnels.tunnels.values()].some(
-      (t) => t.phase === "connected" && t.identity_port === activeConfig.identity_port,
-    );
+    activeAuthUrl != null &&
+    ((activeConfig && (activeConfig.kind ?? "p2p") === "direct") ||
+      [...tunnels.tunnels.values()].some(
+        (t) => t.phase === "connected" && t.identity_port === activeConfig?.identity_port,
+      ));
   const activePin =
     workspaces.find((w) => w.id === activeWorkspaceId)?.identity ?? null;
   const auth = useAuth(
-    activeConfig?.identity_port ?? null,
+    activeAuthUrl,
     activePin,
     activeConfig?.name,
     (level, message, who) => void push(level, message, who),
@@ -205,10 +214,21 @@ export default function App() {
 
   // Can the open repository actually be reached from the session on screen? A working copy
   // pins its remote to a loopback port, so the answer is not "is the tunnel up".
-  const liveTunnels = [...tunnels.tunnels.values()].map((t) => ({
-    sessionName: t.session_name,
-    port: t.loreserver_port,
-    connected: t.phase === "connected",
+  /**
+   * Every host, as something that either serves a URL or does not.
+   *
+   * A P2P host is available when its tunnel is up; a direct host is available because it was
+   * configured — whether it answers is a question for the operation, and its failure is
+   * translated rather than predicted.
+   */
+  const servingHosts = saved.map((h) => ({
+    name: h.name,
+    baseUrl: hostBaseUrl(h),
+    available:
+      (h.kind ?? "p2p") === "direct"
+        ? true
+        : tunnels.forSession(h.session_id)?.phase === "connected",
+    isP2p: (h.kind ?? "p2p") !== "direct",
   }));
   /**
    * Who is signed in **at a given workspace's host**.
@@ -217,15 +237,17 @@ export default function App() {
    * be judged against that host's store. Reading the whole store made a workspace look
    * signed in because the same person was signed in somewhere else entirely.
    */
-  const signedInFor = (w: WorkspaceSummary) =>
-    identitiesAt(auth.status?.all ?? [], hostFor(w)?.identity_port);
+  const signedInFor = (w: WorkspaceSummary) => {
+      const h = hostFor(w);
+      return identitiesAt(auth.status?.all ?? [], h ? hostAuthUrl(h) : null);
+    };
 
   // Every tunnel, not just this tab's: `lore` dials a loopback port and has no idea which
   // session is on screen, so a repository served by another tab's tunnel is reachable.
-  const reach = reachability({ remotePort: repo.info?.remote_port, tunnels: liveTunnels });
+  const reach = reachability({ remoteUrl: repo.info?.remote_url, hosts: servingHosts });
   // The hook reports failures; it needs the current answer, not the one that held when its
   // callbacks were created.
-  useEffect(() => repo.setReach(reach), [repo, reach.state, reach.repoPort, reach.servedBy]);
+  useEffect(() => repo.setReach(reach), [repo, reach.state, reach.repoUrl, reach.servedBy]);
   // Only meaningful with exactly one identity; with several, lore chooses and naming one
   // would put a specific account into a message that might be about a different one.
   const soleIdentity =
@@ -267,13 +289,17 @@ export default function App() {
    */
   const hostFor = useCallback(
     (w: WorkspaceSummary | null) => {
-      if (w?.remote_port == null) return null;
-      const candidates = saved.filter((h) => h.loreserver_port === w.remote_port);
+      if (!w?.remote_url) return null;
+      const candidates = saved.filter((h) => hostServes(h, w.remote_url));
       // Nothing stops two hosts being configured on one local port — only one can be
       // *connected*, and that one is the one actually serving this working copy. Picking the
       // first configured would name a host that is not carrying the traffic.
       return (
-        candidates.find((h) => tunnels.forSession(h.session_id)?.phase === "connected") ??
+        candidates.find(
+          (h) =>
+            (h.kind ?? "p2p") === "direct" ||
+            tunnels.forSession(h.session_id)?.phase === "connected",
+        ) ??
         candidates[0] ??
         null
       );
@@ -369,7 +395,7 @@ export default function App() {
           status={auth.status}
           error={auth.error}
           connected={identityServed}
-          identityPort={activeConfig?.identity_port ?? null}
+          authUrl={activeAuthUrl}
           pinnedIdentity={activePin}
           hostName={badgeHostName}
           onSignIn={() => setSigningIn(true)}
@@ -384,7 +410,7 @@ export default function App() {
         workspaces={workspaces}
         label={labelOf}
         activeId={activeWorkspaceId}
-        health={(w) => workspaceHealth(w, liveTunnels, signedInFor(w))}
+        health={(w) => workspaceHealth(w, servingHosts, signedInFor(w))}
         identityName={(w) =>
           w.identity
             ? (auth.status?.all.find((i) => i.user_id === w.identity)?.user ?? w.identity)
@@ -424,7 +450,7 @@ export default function App() {
           status={auth.status}
           error={auth.error}
           connected={identityServed}
-          identityPort={activeConfig?.identity_port ?? null}
+          authUrl={activeAuthUrl}
           pinnedIdentity={activePin}
           hostName={badgeHostName}
           onSignIn={() => setSigningIn(true)}
@@ -451,8 +477,8 @@ export default function App() {
           <span aria-hidden>↔</span>
           <span>
             {tunnelUp
-              ? `This repository is served by “${reach.servedBy}” on port ${reach.repoPort}, not by this session.`
-              : `“${activeConfig.name}” is not connected, but this repository is served by “${reach.servedBy}” on port ${reach.repoPort} — it will work.`}
+              ? `This repository is served by “${reach.servedBy}”, not by the host selected above.`
+              : `“${activeConfig.name}” is not connected, but this repository is served by “${reach.servedBy}” — it will work.`}
           </span>
         </div>
       )}
@@ -502,10 +528,10 @@ export default function App() {
         </Pane>
       </div>
 
-      {signingIn && activeConfig?.identity_port != null && (
+      {signingIn && activeConfig && activeAuthUrl && (
         <SignInDialog
           sessionName={activeConfig.name}
-          identityPort={activeConfig.identity_port}
+          authUrl={activeAuthUrl}
           identities={auth.status?.identities ?? []}
           canSignIn={identityServed}
           onCancel={() => setSigningIn(false)}
@@ -522,12 +548,17 @@ export default function App() {
           // Every connected host, not the first one found: with two of them, which to clone
           // from decides both the repository list and the identities available.
           hosts={saved
-            .filter((h) => tunnels.forSession(h.session_id)?.phase === "connected")
+            // Direct hosts need no connection to clone from; P2P hosts do.
+            .filter(
+              (h) =>
+                (h.kind ?? "p2p") === "direct" ||
+                tunnels.forSession(h.session_id)?.phase === "connected",
+            )
             .map((h) => ({
               id: h.id,
               name: h.name,
-              port: h.loreserver_port,
-              identityPort: h.identity_port,
+              baseUrl: hostBaseUrl(h),
+              authUrl: hostAuthUrl(h),
             }))}
           defaultHostId={activeConfig?.id ?? null}
           defaultIdentity={activePin}

@@ -22,7 +22,8 @@ import type { NoticeLevel } from "../types/app";
 const POLL_MS = 60_000;
 
 export function useAuth(
-  identityPort: number | null | undefined,
+  /** Where this host's tokens are filed, or null when it needs no sign-in. */
+  authUrl: string | null | undefined,
   /** What the workspace in front of the user is pinned to, if anything. */
   pinnedIdentity: string | null | undefined,
   sessionName: string | undefined,
@@ -42,7 +43,7 @@ export function useAuth(
     setChecking(true);
     try {
       const raw = await invoke<AuthStatus>("auth_status", {
-        identityPort: identityPort ?? null,
+        authUrl: authUrl ?? null,
         identity: pinnedIdentity ?? null,
         nowMs: Date.now(),
       });
@@ -59,7 +60,7 @@ export function useAuth(
     } finally {
       setChecking(false);
     }
-  }, [identityPort, pinnedIdentity]);
+  }, [authUrl, pinnedIdentity]);
 
   useEffect(() => {
     if (watching.current !== sessionName) {
@@ -86,7 +87,7 @@ export function useAuth(
       clearInterval(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [identityPort, pinnedIdentity, sessionName, refresh]);
+  }, [authUrl, pinnedIdentity, sessionName, refresh]);
 
   const announce = (e: Expiry) => {
     if (announced.current === e.state) return;
