@@ -52,7 +52,7 @@ export function HostBar({
 }) {
   return (
     <div className="flex shrink-0 items-center gap-3 border-b border-line bg-surface-1 px-3 py-1.5">
-      <span className="text-[11px] uppercase tracking-wide text-ink-2">Hosts</span>
+      <span className="shrink-0 pr-1 text-[11px] uppercase tracking-wide text-ink-2">Hosts</span>
 
       {hosts.length === 0 && (
         <span className="text-ink-2">No hosts yet — add the details your host gave you.</span>

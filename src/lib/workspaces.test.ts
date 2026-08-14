@@ -175,3 +175,36 @@ describe("siblingsOf", () => {
     expect(siblingsOf(all[0], all)).toEqual([]);
   });
 });
+
+describe("identity only matters where the host asks for it", () => {
+  // Reported from testing: a workspace on a host with no sign-in showed yellow because it
+  // carried a pin, while an equivalent one on an authenticated host showed green. The pin is
+  // inert there — that workspace had been committing and pushing all along — and a warning
+  // about nothing teaches people to ignore the colour.
+  const pinned: WorkspaceSummary = {
+    id: "w1",
+    name: "atlas",
+    path: "/work/atlas",
+    exists: true,
+    remote_url: "grpc://127.0.0.1:51337",
+    remote_port: 51337,
+    identity: "u-87c4",
+    repository_id: "019ffe",
+    instance_id: "i1",
+  };
+  const host: ServingHost = {
+    name: "atlas-test",
+    baseUrl: "grpc://127.0.0.1:51337",
+    available: true,
+    isP2p: false,
+  };
+
+  it("is ready when the host needs no sign-in, whatever the pin says", () => {
+    expect(workspaceHealth(pinned, [host], [], false)).toBe("ready");
+  });
+
+  it("still flags a signed-out pin where the host does require it", () => {
+    expect(workspaceHealth(pinned, [host], [], true)).toBe("signed_out");
+    expect(workspaceHealth(pinned, [host], ["u-87c4"], true)).toBe("ready");
+  });
+});

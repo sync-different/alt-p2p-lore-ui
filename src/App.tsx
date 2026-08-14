@@ -418,7 +418,13 @@ export default function App() {
         workspaces={workspaces}
         label={labelOf}
         activeId={activeWorkspaceId}
-        health={(w) => workspaceHealth(w, servingHosts, signedInFor(w))}
+        health={(w) => {
+          // Whether signing in applies at all is a fact about the host, not the workspace:
+          // a host with no auth URL has no store for a pinned identity to be missing from.
+          const host = hostFor(w);
+          const requiresSignIn = host != null && hostAuthUrl(host) != null;
+          return workspaceHealth(w, servingHosts, signedInFor(w), requiresSignIn);
+        }}
         identityName={(w) =>
           w.identity
             ? (auth.status?.all.find((i) => i.user_id === w.identity)?.user ?? w.identity)

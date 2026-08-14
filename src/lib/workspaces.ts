@@ -69,6 +69,14 @@ export function workspaceHealth(
   w: WorkspaceSummary,
   hosts: ServingHost[],
   signedInIds: string[],
+  /**
+   * Does this workspace's host require signing in at all?
+   *
+   * A host with no auth URL does not, and a pin on a workspace there is inert — lore has no
+   * store to look the identity up in. Judging it as "signed out" put a warning on a workspace
+   * that had been committing and pushing all along, which teaches people to ignore the colour.
+   */
+  requiresSignIn = true,
 ): WorkspaceHealth {
   if (!w.exists) return "missing";
   if (!w.remote_url) return "unknown";
@@ -76,8 +84,9 @@ export function workspaceHealth(
   const served = hosts.some((h) => h.available && authorityOf(h.baseUrl) === wanted);
   if (!served) return "unreachable";
   // A pinned identity that is not signed in fails every call with "No token stored" — true,
-  // and nothing about that message points at the repository.
-  if (w.identity && !signedInIds.includes(w.identity)) return "signed_out";
+  // and nothing about that message points at the repository. But only where signing in is a
+  // thing the host asks for.
+  if (requiresSignIn && w.identity && !signedInIds.includes(w.identity)) return "signed_out";
   return "ready";
 }
 
