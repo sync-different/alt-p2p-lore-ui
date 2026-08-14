@@ -253,6 +253,10 @@ mid-session, and one restarted underneath a push.
 
 ## Building on Windows
 
+**This repository has no git remote** (`git remote -v` is empty) — it has only ever existed on
+one machine. To get it onto another, either add a remote and push, or copy the folder. Copying
+brings `internal/` (git-ignored plans) with it, which a clone would not.
+
 **Nothing here has ever been built or run on Windows.** Everything below is what a reading of
 the tree says will break, not experience — treat it as a starting list rather than a finished
 one, and correct it once you know better.
@@ -279,8 +283,7 @@ Two behaviours to distrust until you have watched them:
 
 - **`lore clone` is driven through a pseudo-terminal** (`portable-pty`) because the progress bar
   only draws for an interactive terminal. On Windows that is ConPTY, and the parser splits on
-  `` *as well as* `
-` — which matters more there, not less.
+  `\r` *as well as* `\n` — which matters more there, not less.
 - **Path separators.** The app builds its own relative paths with `/`, and every parser was
   written against macOS output. If `lore` prints `\` on Windows, the tree and the change list
   will disagree about what a path is. Check this early; it is the kind of thing that half-works.
