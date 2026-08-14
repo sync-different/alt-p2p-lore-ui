@@ -248,64 +248,7 @@ pub async fn clone_repo(
     let cwd_for_thread = std::env::temp_dir();
 
     let worker = tauri::async_runtime::spawn_blocking(move || -> Result<i32, String> {
-        use portable_pty::{CommandBuilder, PtySize};
-        let pty = portable_pty::native_pty_system()
-            .openpty(PtySize {
-                // Wide enough that the bar is not truncated, and a fixed size because nothing
-                // is resizing this terminal.
-                cols: 120,
-                rows: 24,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| format!("Could not open a terminal for the clone ({e})."))?;
-
-        let mut cmd = CommandBuilder::new(exe);
-        for a in &args_for_thread {
-            cmd.arg(a);
-        }
-        cmd.cwd(cwd_for_thread);
-        // Without a sane TERM some progress libraries stay silent, which is the whole point
-        // of going to this trouble.
-        cmd.env("TERM", "xterm-256color");
-
-        let mut child = pty
-            .slave
-            .spawn_command(cmd)
-            .map_err(|e| format!("Lore could not be started ({e})."))?;
-        drop(pty.slave);
-
-        let mut reader = pty
-            .master
-            .try_clone_reader()
-            .map_err(|e| format!("Could not read the clone's output ({e})."))?;
-
-        let mut buf = [0u8; 4096];
-        let mut pending = String::new();
-        loop {
-            match std::io::Read::read(&mut reader, &mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    pending.push_str(&String::from_utf8_lossy(&buf[..n]));
-                    // Split on BOTH: the bar redraws with a carriage return and never a
-                    // newline, so waiting for lines would mean waiting for the whole clone.
-                    while let Some(i) = pending.find(['\r', '\n']) {
-                        let piece = pending[..i].to_string();
-                        pending.drain(..=i);
-                        if !piece.trim().is_empty() {
-                            let _ = tx.send(PtyLine(piece));
-                        }
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-        if !pending.trim().is_empty() {
-            let _ = tx.send(PtyLine(pending.clone()));
-        }
-
-        let status = child.wait().map_err(|e| format!("The clone could not be waited on ({e})."))?;
-        Ok(status.exit_code() as i32)
+        pump_pty(exe, &args_for_thread, cwd_for_thread, tx)
     });
 
     let mut tail: Vec<String> = Vec::new();
@@ -383,8 +326,12 @@ pub async fn clone_repo(
             files_done: summary.map(|(f, _)| f),
             files_total: summary.map(|(f, _)| f),
             files_growing: None,
-            seconds: None,
-                        done: Some(ok),
+            // `parse_duration` had a test and no caller that kept its answer: this read
+            // `seconds: None` while the value sat computed and unused two lines above, so
+            // the summary never showed how long the clone took. The compiler said so, as an
+            // unused-variable warning that had become part of the scenery.
+            seconds,
+            done: Some(ok),
             error: error.clone(),
         },
     );
@@ -392,6 +339,102 @@ pub async fn clone_repo(
         None => Ok(dest),
         Some(e) => Err(e),
     }
+}
+
+/// Run a command under a pseudo-terminal, forwarding each `\r`- or `\n`-terminated piece.
+///
+/// Split out from `clone_repo` so the part that is genuinely hard — knowing when a
+/// pseudo-terminal has finished — can be tested against a trivial command, with no host, no
+/// repository and no `lore`. That distinction is the whole reason this function exists:
+/// the reading was never the fragile part, the *ending* was.
+fn pump_pty(
+    exe: std::path::PathBuf,
+    args: &[String],
+    cwd: std::path::PathBuf,
+    tx: tokio::sync::mpsc::UnboundedSender<PtyLine>,
+) -> Result<i32, String> {
+    use portable_pty::{CommandBuilder, PtySize};
+    let pty = portable_pty::native_pty_system()
+        .openpty(PtySize {
+            // Wide enough that the bar is not truncated, and a fixed size because nothing
+            // is resizing this terminal.
+            cols: 120,
+            rows: 24,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|e| format!("Could not open a terminal for the clone ({e})."))?;
+
+    let mut cmd = CommandBuilder::new(exe);
+    for a in args {
+        cmd.arg(a);
+    }
+    cmd.cwd(cwd);
+    // Without a sane TERM some progress libraries stay silent, which is the whole point
+    // of going to this trouble.
+    cmd.env("TERM", "xterm-256color");
+
+    let mut child = pty
+        .slave
+        .spawn_command(cmd)
+        .map_err(|e| format!("Lore could not be started ({e})."))?;
+    drop(pty.slave);
+
+    let mut reader = pty
+        .master
+        .try_clone_reader()
+        .map_err(|e| format!("Could not read the clone's output ({e})."))?;
+
+    // Reading to EOF is enough on Unix: the last slave descriptor closing ends the
+    // stream, so the loop below finishes on its own when `lore` exits.
+    //
+    // **ConPTY does not do that.** conhost keeps the master readable after the child has
+    // gone, so the read blocks forever, `tx` is never dropped, the `rx.recv()` loop never
+    // ends, and the `done` event at the bottom of this function is never emitted. The
+    // clone itself is entirely fine — observed finishing in 0.08s, every line parsed and
+    // displayed, and the button still saying "Cloning…". Waiting on the child separately
+    // and *closing the master* is what ends the read.
+    let master = pty.master;
+    let waiter = std::thread::spawn(move || {
+        let status = child.wait();
+        // The child has exited, but conhost may still be holding what it wrote last —
+        // and the last thing `lore clone` prints is precisely the summary this parses
+        // for the file and byte totals. Closing immediately would truncate exactly the
+        // part that is read, so let the reader drain first.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        drop(master);
+        status
+    });
+
+    let mut buf = [0u8; 4096];
+    let mut pending = String::new();
+    loop {
+        match std::io::Read::read(&mut reader, &mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                pending.push_str(&String::from_utf8_lossy(&buf[..n]));
+                // Split on BOTH: the bar redraws with a carriage return and never a
+                // newline, so waiting for lines would mean waiting for the whole clone.
+                while let Some(i) = pending.find(['\r', '\n']) {
+                    let piece = pending[..i].to_string();
+                    pending.drain(..=i);
+                    if !piece.trim().is_empty() {
+                        let _ = tx.send(PtyLine(piece));
+                    }
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    if !pending.trim().is_empty() {
+        let _ = tx.send(PtyLine(pending.clone()));
+    }
+
+    let status = waiter
+        .join()
+        .map_err(|_| "The clone's exit could not be observed.".to_string())?
+        .map_err(|e| format!("The clone could not be waited on ({e})."))?;
+    Ok(status.exit_code() as i32)
 }
 
 /// One piece of terminal output, split on a newline *or* a carriage return.
@@ -402,20 +445,33 @@ struct PtyLine(String);
 /// The sidecar sits next to the app's own executable; resolving it by hand rather than through
 /// the shell plugin because that plugin does not offer a terminal, which is the entire reason
 /// this path exists.
+/// The file name `lore` actually has on this platform.
+///
+/// Everywhere else the shell plugin appends this for us — `sidecar("lore")` finds
+/// `lore.exe` on Windows without being told. This path resolves the binary by hand, so it
+/// is the one place that has to know, and hardcoding the Unix name here meant clone was the
+/// only broken command on Windows while every other call worked.
+const LORE_EXE: &str = if cfg!(windows) { "lore.exe" } else { "lore" };
+
 fn lore_binary(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let candidate = dir.join("lore");
-            if candidate.is_file() {
-                return Ok(candidate);
+            if let Some(found) = lore_in_dir(dir) {
+                return Ok(found);
             }
         }
     }
     let _ = app;
     // Development: `cargo tauri dev` does not stage sidecars beside the binary.
-    which_on_path("lore").ok_or_else(|| {
+    which_on_path(LORE_EXE).ok_or_else(|| {
         "The bundled Lore program could not be found next to the app.".to_string()
     })
+}
+
+/// `lore` inside one directory, under whatever name it goes by here.
+fn lore_in_dir(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let candidate = dir.join(LORE_EXE);
+    candidate.is_file().then_some(candidate)
 }
 
 fn which_on_path(name: &str) -> Option<std::path::PathBuf> {
@@ -568,5 +624,124 @@ mod summary_tests {
     fn a_growing_file_count_still_yields_a_total() {
         let (files, _) = parse_summary("Cloned 800/818+ files (1.00 GiB/2.00 GiB)").unwrap();
         assert_eq!(files, 818);
+    }
+}
+
+#[cfg(test)]
+mod binary_lookup_tests {
+    use super::{lore_in_dir, LORE_EXE};
+
+    /// Clone resolves `lore` by hand — it cannot use the shell plugin, which is the only
+    /// thing that knows to add `.exe`. So this is the one lookup that has to carry the
+    /// platform's own name, and getting it wrong broke *only* clone on Windows: the host
+    /// went green, every other command worked, and Clone reported the binary missing while
+    /// it sat right beside the app.
+    #[test]
+    fn lore_is_found_under_the_name_this_platform_gives_it() {
+        let dir = tempfile::tempdir().unwrap();
+        // Spelled out rather than reusing LORE_EXE: writing and reading through the same
+        // constant is true however wrong that constant is, which is how the first version
+        // of this test passed against the bug it was written to catch. This is the name
+        // fetch-deps.sh stages and Tauri copies beside the app.
+        let staged = if cfg!(windows) { "lore.exe" } else { "lore" };
+        std::fs::write(dir.path().join(staged), b"#!/bin/sh\n").unwrap();
+        assert_eq!(lore_in_dir(dir.path()), Some(dir.path().join(staged)));
+    }
+
+    #[test]
+    fn the_name_carries_an_exe_suffix_only_on_windows() {
+        // Pinning the fix itself: on Windows the bare Unix name is not what is on disk, and
+        // looking for it is what produced "could not be found next to the app".
+        if cfg!(windows) {
+            assert_eq!(LORE_EXE, "lore.exe");
+        } else {
+            assert_eq!(LORE_EXE, "lore");
+        }
+    }
+
+    #[test]
+    fn a_directory_without_lore_finds_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(lore_in_dir(dir.path()), None);
+    }
+
+    #[test]
+    fn a_directory_holding_only_the_other_platforms_name_is_not_a_match() {
+        // The regression in both directions: a Windows build must not accept a bare `lore`,
+        // and a Unix build must not accept `lore.exe`.
+        let dir = tempfile::tempdir().unwrap();
+        let wrong = if cfg!(windows) { "lore" } else { "lore.exe" };
+        std::fs::write(dir.path().join(wrong), b"x").unwrap();
+        assert_eq!(lore_in_dir(dir.path()), None);
+    }
+}
+
+#[cfg(test)]
+mod pty_tests {
+    use super::{pump_pty, PtyLine};
+    use std::time::Duration;
+
+    /// A pseudo-terminal must report that it has *finished*, not merely deliver output.
+    ///
+    /// This is the regression test for the bug that got past every other check: the clone
+    /// itself worked perfectly — 6/6 files, every line parsed and displayed, "Clone complete
+    /// in 0.08s" printed — and the app sat on "Cloning…" forever, because the read never
+    /// ended. Reading to EOF is enough on Unix, where the last slave descriptor closing ends
+    /// the stream; ConPTY keeps the master open after the child exits, so the loop blocked,
+    /// the sender was never dropped, and the `done` event was never emitted.
+    ///
+    /// Asserted with a deadline rather than by calling it directly, because the failure mode
+    /// is a *hang*: without the fix this does not return a wrong answer, it never returns,
+    /// and a test that hangs reports nothing useful.
+    fn run_with_deadline(args: Vec<String>) -> Option<(i32, Vec<String>)> {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<PtyLine>();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+
+        let exe: std::path::PathBuf = if cfg!(windows) { "cmd.exe".into() } else { "/bin/sh".into() };
+        std::thread::spawn(move || {
+            let r = pump_pty(exe, &args, std::env::temp_dir(), tx);
+            let _ = done_tx.send(r);
+        });
+
+        let code = done_rx.recv_timeout(Duration::from_secs(20)).ok()?.ok()?;
+
+        let mut lines = Vec::new();
+        while let Ok(PtyLine(l)) = rx.try_recv() {
+            lines.push(l);
+        }
+        Some((code, lines))
+    }
+
+    fn echo_args(text: &str) -> Vec<String> {
+        if cfg!(windows) {
+            vec!["/c".into(), format!("echo {text}")]
+        } else {
+            vec!["-c".into(), format!("echo {text}")]
+        }
+    }
+
+    #[test]
+    fn a_finished_command_ends_the_pump_rather_than_blocking_forever() {
+        let (code, lines) = run_with_deadline(echo_args("marker-one"))
+            .expect("pump_pty did not return: the pseudo-terminal never reported completion");
+        assert_eq!(code, 0);
+        assert!(
+            lines.iter().any(|l| l.contains("marker-one")),
+            "expected the command's output to be forwarded, got {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_failing_command_still_ends_and_reports_its_exit_code() {
+        // The error path has to terminate too — a clone that fails must reach the `done`
+        // emit, or a failure is displayed as an unending clone.
+        let args: Vec<String> = if cfg!(windows) {
+            vec!["/c".into(), "exit 3".into()]
+        } else {
+            vec!["-c".into(), "exit 3".into()]
+        };
+        let (code, _) = run_with_deadline(args)
+            .expect("pump_pty did not return for a failing command");
+        assert_eq!(code, 3);
     }
 }

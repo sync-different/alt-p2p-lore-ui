@@ -52,7 +52,7 @@ route at all, which is most of the time and not all of it.
 
 | State | Lives in | Reason |
 |---|---|---|
-| Running tunnels | Rust `registry` | A process must outlive the component that started it. The frontend holds ids; Rust holds handles. Every spawn is killed on exit, and `orphans.rs` reaps what a crash left behind. |
+| Running tunnels | Rust `registry` | A process must outlive the component that started it. The frontend holds ids; Rust holds handles. Every spawn is killed on exit, and `orphans.rs` reaps what a crash left behind. But note what the registry actually holds: the **`run-java` wrapper**, not the JVM — see below. |
 | Hosts (how to reach them) | `sessions.json` | Plain, user-editable, no secrets. A host is a URL plus, for P2P, what is needed to build the tunnel that serves it. |
 | Session keys | OS keychain | A key in a settings file is a key in a backup. |
 | Workspaces | `workspaces.json` | A list of paths; everything else about a working copy is read from the working copy. |
@@ -132,6 +132,20 @@ becoming usable — and only one of them is worth announcing.
 An exit the app asked for is not a failure. A killed child exits exactly like a crashed one, so
 the registry records the intent before killing; without that, disconnecting looks like an error.
 
+**The stream's encoding is part of the contract.** Java sets `file.encoding` to UTF-8 but leaves
+`stdout.encoding` at the platform's native charset — Cp1252 on Windows — so `--json` emitted
+NDJSON that stopped being UTF-8 the moment an event carried a non-ASCII character. The jar is
+launched with `-Dstdout.encoding=UTF-8` for that reason. Ordinary ASCII traffic hides the fault
+completely, which is why it survived until an em dash appeared in a warning.
+
+**What the app owns is a wrapper, not the JVM.** The sidecar (`run-java`) launches the bundled
+runtime, so the pid the registry holds is the wrapper's. On Unix the wrapper `exec`s and there is
+nothing left in between. Windows has no `exec`, so the wrapper stays as the JVM's parent — and
+Windows does not kill children with their parent, which made every `kill` leave a live tunnel
+holding its port. The wrapper therefore puts the JVM in a **job object** that dies with it. The
+lesson generalises past this bug: *killing what you spawned is not the same as killing what you
+started*, and the registry cannot tell the difference from where it sits.
+
 ## The webview
 
 React holds no truth. Hooks mirror Rust state and poll what cannot be pushed; components render
@@ -163,6 +177,20 @@ differently — a stopped service refuses in about 0.2s, a sleeping machine answ
 and they send the user to different places: start the service, or go and look at the machine.
 What the probe does *not* claim is that loreserver is healthy or that this identity may do
 anything; an open port is evidence the machine is up, and that is all the dot means.
+
+**There is a third failure this design does not currently see**, found by meeting it: a tunnel
+whose upstream link dies while its process lives. Observed with the JVM alive at 0% CPU, no
+socket to the relay at all, both local ports still bound, and every request hanging — the dot
+green throughout. Neither mechanism catches it. The process is running, so the supervisor has
+nothing to report; the port is bound, so a connect-based probe succeeds. The jar is supposed to
+notice (`mux.awaitClosed()` → `{"event":"disconnected"}` → exit) and did not, so there was no
+event to miss and the reconnect logic correctly never fired.
+
+The general point outlives the specific bug, and it applies to the direct-host probe too: **a
+liveness check that stops at the near end of a connection cannot tell a working path from a
+listening socket with nothing behind it.** Establishing that needs a probe that travels the
+whole path — which is a question about what the app is willing to spend, not one this design has
+answered.
 
 Three rules follow, and the third is the one to argue with if any:
 

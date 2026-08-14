@@ -63,24 +63,37 @@ Then **Connect** (peer-to-peer only — a direct host has nothing to connect) an
 ## Build
 
 Requires Node 20+, Rust (stable) and a JDK 17+ (used once, to `jlink` the bundled runtime).
+Windows additionally needs the MSVC toolchain and Git Bash, which runs the staging script
+unchanged.
 
 ```bash
 scripts/fetch-deps.sh        # stage the third-party payload — see below
 npm install
-npm run tauri build -- --bundles app     # or: --bundles dmg
+npm run tauri build          # bundles for the host you are on
 ```
 
-The result is `src-tauri/target/release/bundle/`.
+The result is `src-tauri/target/release/bundle/` — `app` and `dmg` on macOS, `msi` and `nsis`
+on Windows. Targets are not listed in the config: `"targets": "all"` resolves per platform,
+which is Tauri's own default.
+
+Run `scripts/fetch-deps.sh` **before `cargo test`, not just before a build** — Tauri validates
+the bundled payload in its build script, so an unstaged tree fails the tests too.
 
 ### The third-party payload
 
-Three things ship inside the installer and **none of them are in git** — `lore` alone is 33 MB
+Four things ship inside the installer and **none of them are in git** — `lore` alone is 33 MB
 and a runtime ~45 MB. `scripts/fetch-deps.sh` stages them and writes `deps-manifest.json`
 recording the exact versions, so a build can be traced back to what went into it:
 
 1. the `lore` CLI binary
-2. alt-p2p-lore's fat JAR
-3. a `jlink`'d Java runtime to run that JAR
+2. `run-java`, the sidecar that launches the bundled runtime
+3. alt-p2p-lore's fat JAR
+4. a `jlink`'d Java runtime to run that JAR
+
+The sidecar differs by platform and the script handles it: Unix ships `run-java.sh` as-is,
+Windows compiles `src-tauri/scripts/run-java.rs` with `rustc` (already required, to read the
+target triple), because a Windows sidecar must be a real executable and a renamed `.cmd` will
+not load. Both are named `run-java`, so nothing calling it knows which platform it is on.
 
 It copies from local paths, overridable when they move:
 

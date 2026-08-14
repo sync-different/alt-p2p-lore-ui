@@ -21,10 +21,33 @@ BIN_DIR="$ROOT/src-tauri/binaries"
 RES_DIR="$ROOT/src-tauri/resources"
 MANIFEST="$RES_DIR/deps-manifest.json"
 
+# Windows runs this under Git Bash, so bash and `file` are both available and the script
+# stays one script rather than two that drift. What genuinely differs is named below:
+# the `.exe` suffix Tauri requires on sidecars, where a JDK and `lore` are installed, and
+# that the sidecar wrapper must be compiled rather than copied.
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) IS_WINDOWS=1; EXE=".exe" ;;
+  *)                    IS_WINDOWS=0; EXE=""     ;;
+esac
+
 # Sources. Override with env vars when these move (a released artefact, another machine).
-LORE_SRC="${LORE_SRC:-$HOME/.local/bin/lore}"
-JAR_SRC="${JAR_SRC:-$HOME/Development/GitHub/alt-p2p-lore/target/alt-p2p-lore-0.4.1-SNAPSHOT.jar}"
-JDK_HOME="${JDK_HOME:-$(/usr/libexec/java_home -v 17 2>/dev/null)}"
+if [ "$IS_WINDOWS" = "1" ]; then
+  LORE_SRC="${LORE_SRC:-$HOME/bin/lore.exe}"
+  # No java_home on Windows; JAVA_HOME is the convention and is what the installers set.
+  JDK_HOME="${JDK_HOME:-${JAVA_HOME:-}}"
+else
+  LORE_SRC="${LORE_SRC:-$HOME/.local/bin/lore}"
+  JDK_HOME="${JDK_HOME:-$(/usr/libexec/java_home -v 17 2>/dev/null)}"
+fi
+
+# Pick the newest jar rather than pinning a version. A pinned name goes stale silently the
+# next time alt-p2p-lore's version moves — it had already drifted to a 0.4.1 that no longer
+# existed, and the failure is "not found" pointing at a path nobody had reason to doubt.
+if [ -z "${JAR_SRC:-}" ]; then
+  JAR_DIR="$HOME/Development/GitHub/alt-p2p-lore/target"
+  JAR_SRC="$(ls -t "$JAR_DIR"/alt-p2p-lore-*.jar 2>/dev/null | grep -v -- '-sources\|-javadoc' | head -1)"
+  JAR_SRC="${JAR_SRC:-$JAR_DIR/alt-p2p-lore.jar}"
+fi
 
 CHECK_ONLY=0
 [ "${1:-}" = "--check" ] && CHECK_ONLY=1
@@ -45,7 +68,8 @@ say "jdk for jlink : ${JDK_HOME:-<none found>}"
 echo
 
 if [ "$CHECK_ONLY" = "1" ]; then
-  for f in "$BIN_DIR/lore-$TRIPLE" "$RES_DIR/alt-p2p-lore.jar" "$RES_DIR/jre/bin/java"; do
+  for f in "$BIN_DIR/lore-$TRIPLE$EXE" "$BIN_DIR/run-java-$TRIPLE$EXE" \
+           "$RES_DIR/alt-p2p-lore.jar" "$RES_DIR/jre/bin/java$EXE"; do
     [ -e "$f" ] && say "present : $f" || say "MISSING : $f"
   done
   [ -f "$MANIFEST" ] && { say "manifest:"; sed 's/^/    /' "$MANIFEST"; }
@@ -57,16 +81,39 @@ mkdir -p "$BIN_DIR" "$RES_DIR"
 # --- 1. lore -----------------------------------------------------------------
 [ -x "$LORE_SRC" ] || fail "lore not found or not executable at $LORE_SRC (set LORE_SRC=)"
 LORE_VER="$("$LORE_SRC" --version 2>&1 | head -1)"
-LORE_ARCH="$(file -b "$LORE_SRC" | grep -oE 'arm64|x86_64' | head -1)"
-cp -f "$LORE_SRC" "$BIN_DIR/lore-$TRIPLE"
-chmod +x "$BIN_DIR/lore-$TRIPLE"
-say "lore     -> binaries/lore-$TRIPLE   ($LORE_VER, $LORE_ARCH)"
+# `file` spells the same architecture differently per binary format: Mach-O says `x86_64`,
+# PE says `x86-64`. Matching only the underscore left this field empty on Windows — which
+# a manifest exists to prevent, since it is read to answer "what went into this build?".
+LORE_ARCH="$(file -b "$LORE_SRC" | grep -oE 'arm64|aarch64|x86[_-]64' | head -1 | tr '-' '_')"
+cp -f "$LORE_SRC" "$BIN_DIR/lore-$TRIPLE$EXE"
+chmod +x "$BIN_DIR/lore-$TRIPLE$EXE"
+say "lore     -> binaries/lore-$TRIPLE$EXE   ($LORE_VER, ${LORE_ARCH:-unknown})"
 
 # lore is MIT; shipping it means shipping its licence.
 if [ -f "$ROOT/licenses/LORE-LICENSE" ]; then
   say "         (licence present in licenses/)"
 else
   say "         NOTE: add licenses/LORE-LICENSE — lore is MIT and we redistribute it"
+fi
+
+# --- 1b. the run-java sidecar ------------------------------------------------
+# This step is new. It was a manual copy on the machine this was built on, which no note
+# recorded — so a fresh clone bundled everything except the wrapper that starts the tunnel,
+# and Tauri reported only "binary not found". Staging it here is what makes the checkout
+# reproducible on both platforms.
+#
+# Unix ships the shell script as-is. Windows cannot: a sidecar must be a real PE image and
+# a renamed `.cmd` will not load, so the Rust counterpart is compiled with plain `rustc` —
+# already required above for the target triple, so this adds no new prerequisite.
+RUNJAVA_DEST="$BIN_DIR/run-java-$TRIPLE$EXE"
+if [ "$IS_WINDOWS" = "1" ]; then
+  rustc -O --edition 2021 -o "$RUNJAVA_DEST" "$ROOT/src-tauri/scripts/run-java.rs" \
+    || fail "could not compile src-tauri/scripts/run-java.rs"
+  say "run-java -> binaries/run-java-$TRIPLE$EXE   (compiled from run-java.rs)"
+else
+  cp -f "$ROOT/src-tauri/scripts/run-java.sh" "$RUNJAVA_DEST"
+  chmod +x "$RUNJAVA_DEST"
+  say "run-java -> binaries/run-java-$TRIPLE   (from run-java.sh)"
 fi
 
 # --- 2. alt-p2p-lore jar -----------------------------------------------------
@@ -108,7 +155,7 @@ else
     --add-modules "$MODULES" \
     --strip-debug --no-header-files --no-man-pages $COMPRESS \
     --output "$RES_DIR/jre" || fail "jlink failed"
-  say "jre      -> resources/jre   ($("$RES_DIR/jre/bin/java" --version 2>&1 | head -1))"
+  say "jre      -> resources/jre   ($("$RES_DIR/jre/bin/java$EXE" --version 2>&1 | head -1))"
 fi
 
 # --- manifest ----------------------------------------------------------------
@@ -118,7 +165,7 @@ cat > "$MANIFEST" <<EOF
   "triple": "$TRIPLE",
   "lore": { "version": "$LORE_VER", "arch": "$LORE_ARCH", "source": "$LORE_SRC" },
   "jar":  { "file": "$(basename "$JAR_SRC")" },
-  "jre":  { "version": "$("$RES_DIR/jre/bin/java" --version 2>&1 | head -1)" }
+  "jre":  { "version": "$("$RES_DIR/jre/bin/java$EXE" --version 2>&1 | head -1)" }
 }
 EOF
 

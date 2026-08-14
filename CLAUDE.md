@@ -19,14 +19,27 @@ must name the thing to change, and a green light must be one the app can justify
 ## Build & Test
 
 ```bash
-./scripts/fetch-deps.sh      # stage lore, the jar and a jlink JRE into src-tauri/ (never committed)
+./scripts/fetch-deps.sh      # stage lore, run-java, the jar and a jlink JRE (never committed)
 npm install
 npm run tauri dev            # development
-npm run tauri build -- --bundles app
+npm run tauri build          # bundles for whatever host you are on
 
 npm test -- --run            # vitest (frontend)
 cd src-tauri && cargo test   # Rust
 ```
+
+Runs on macOS and Windows. Two things about the order that are not obvious:
+
+- **`fetch-deps.sh` comes first, always** — including before `cargo test`. `tauri-build`
+  validates `externalBin` and `resources` before compiling any Rust, so with an unstaged
+  payload the *tests* fail, not just the build, and the message names a file rather than the
+  cause.
+- **On Windows, stop `tauri dev` before `cargo test`.** Windows locks the running `.exe`
+  against relinking and the build dies on `Access is denied. (os error 13/5)`. The two coexist
+  happily on macOS, so the habit does not transfer.
+
+Windows additionally needs the MSVC toolchain and Git Bash (which runs `fetch-deps.sh`
+unchanged). See **[Building on Windows](#building-on-windows)**.
 
 Both suites must pass; `npm run build` also typechecks. **[ARCHITECTURE.md](ARCHITECTURE.md)**
 covers how the app is put together and why. Milestone plans and the working notes behind the
@@ -245,6 +258,23 @@ mid-session, and one restarted underneath a push.
   perfectly; the one line that *called* it failed to be inserted by an edit, so a killed tunnel
   went red and sat there. Every test still passed, because they all exercised the function in
   isolation. Where a decision is reached through an event, test the path from the event.
+- **A test that writes and reads through the same constant proves nothing.** The first version of
+  the `lore.exe` lookup test created a file named `LORE_EXE` and asserted `LORE_EXE` was found —
+  true however wrong that constant was, and it passed against the very bug it was written for.
+  Only spelling the expected name out independently made it fail. When a test and the code under
+  it agree by construction, the test is a mirror.
+- **A hang is not a failure until you give it a deadline.** The ConPTY bug made `pump_pty` block
+  forever; a test calling it directly would have hung the runner and reported nothing. Run it on
+  a thread with `recv_timeout` so "never returned" becomes an assertion with a message.
+- **Confirm the fix by re-running the experiment that found the bug, not a new one.** The
+  orphaned-JVM test looked *fixed* on the first attempt while still broken — the JVM had exited
+  on its own because its connect failed, not because anything killed it. The observation was
+  real and the inference was wrong. Control for why the thing you are watching might do the right
+  thing for the wrong reason.
+- **The compiler had been reporting one of these bugs all along.** `parse_duration` was called
+  and its result dropped, so the clone summary never showed a duration — an `unused variable:
+  seconds` warning that had become scenery. Warnings in a tree that otherwise has none are worth
+  reading.
 - **Verify you launched what you just built.** A successful `npm run tauri build` is not evidence:
   the product was renamed, so yesterday's `Alterante Lore.app` sat beside today's `alt-lore
   Desktop.app` and sorted *first* — `ls | head -1` launched a stale bundle that looked identical.
@@ -253,40 +283,150 @@ mid-session, and one restarted underneath a push.
 
 ## Building on Windows
 
-**This repository has no git remote** (`git remote -v` is empty) — it has only ever existed on
-one machine. To get it onto another, either add a remote and push, or copy the folder. Copying
-brings `internal/` (git-ignored plans) with it, which a clone would not.
+This repository now has a remote (`sync-different/alt-p2p-lore-ui`), added to get it onto a
+second machine. Note that a clone does **not** bring `internal/` (git-ignored plans) — copy that
+across separately, or work without it; nothing in the build depends on it.
 
-**Nothing here has ever been built or run on Windows.** Everything below is what a reading of
-the tree says will break, not experience — treat it as a starting list rather than a finished
-one, and correct it once you know better.
+**Windows builds and runs.** `msi` and `nsis` bundles, and both suites green — **225 Rust, 353
+vitest**. The port itself changed no test and no parser: it reached macOS's 219 and 353 on the
+Cargo.toml fix alone, and the six extra Rust tests came later, with the bugs found by *running*
+the thing. What follows replaces the earlier list of predictions; where a prediction was wrong,
+the correction is the interesting part.
 
-Four things will stop a Windows build, in the order you will meet them:
+The order they are actually met is not the order they were guessed:
 
 | | |
 |---|---|
-| `src-tauri/Cargo.toml` | `keyring = { features = ["apple-native"] }` — macOS-only. Windows needs `windows-native`. This is where **session keys** live, so it is not optional. |
-| `src-tauri/tauri.conf.json` | `"targets": ["app", "dmg"]` are macOS bundles. Use `msi` and/or `nsis`. |
-| `scripts/fetch-deps.sh` | stages the sidecar as `binaries/lore-<triple>` with no **`.exe`**. Tauri looks for `lore-<triple>.exe` on Windows and the failure says only "binary not found". |
-| the script itself | bash, and it shells out to `file -b`. Run it under Git Bash, or port it. The **triple is derived from `rustc`**, so that part is already portable. |
+| **1. staging, not keyring** | `tauri-build` validates `externalBin` *and* `resources` before compiling a line of Rust, so **`cargo test` cannot run at all** until `lore`, `run-java`, the jar and a JRE are on disk. On Windows the tests are gated behind the full third-party payload. |
+| **2. `src-tauri/Cargo.toml`** | The problem was the *section*, not the feature. All four crates sat under `[target.'cfg(unix)'.dependencies]`, but only `libc` is Unix-only — `tokio`, `dirs` and `keyring` are called from code with no `cfg` on it, so Windows lost three crates and 16 errors. `keyring` is now split per `target_os` (`apple-native` / `windows-native` / `linux-native`); it offers no portable default, and naming one platform's backend is exactly what pinned the crate to that platform. |
+| **3. `run-java` was never staged at all** | Not by `fetch-deps.sh`, on either platform — it had been copied into `binaries/` by hand, and nothing recorded it. A fresh clone bundled everything except the wrapper that starts the tunnel, and Tauri said only "binary not found". The script stages it now. |
+| **4. a shell script cannot be a Windows sidecar** | It must be a real PE image; a renamed `.cmd` will not load. `src-tauri/scripts/run-java.rs` is the counterpart to `run-java.sh`, compiled by `fetch-deps.sh` with plain `rustc` — already required for the triple, so it adds no prerequisite. Same sidecar name on both platforms, so `supervisor.rs` and `prereq.rs` never learn which OS they are on. |
+| **5. `tauri.conf.json`** | `"targets": "all"` rather than a platform list — it is Tauri's own default and resolves per host. This is what the sibling **alt-p2p-ui** already ships on Windows. |
 
-Staging the third-party payload:
+`fetch-deps.sh` runs **under Git Bash unchanged** — bash and `file` are both there, so it stayed
+one script rather than two that drift. What genuinely differed: the `.exe` suffix, `lore` at
+`~/bin/lore.exe`, `JAVA_HOME` instead of `/usr/libexec/java_home`, and `file -b` spelling the
+architecture `x86-64` for PE where Mach-O says `x86_64` — which silently emptied a manifest field
+that exists to answer "what went into this build?".
 
-- **`lore`** — EpicGames ship a PowerShell installer (`scripts/install.ps1`, the shell one refuses
-  to run on Windows). Pin the version: `-Version v0.8.6` and match whatever the hosts run. The
-  shell installer also needs `--server` to place `loreserver`; assume the same split.
-- **the jar** — platform-independent, built from `alt-p2p-lore` with `mvn package`.
-- **the JRE** — `jlink` from a Windows JDK 17+. The script's read-only-output workaround is
-  written for a Unix `chmod`; expect to adjust it.
+**When in doubt, read [alt-p2p-ui](https://github.com/sync-different/alt-p2p-ui).** It is the same
+stack — Tauri, a Java sidecar, a jlink'd JRE — already shipping on Windows, and it settled the
+sidecar shape and the bundle targets here. Its `src-tauri/sidecar/src/main.rs` is the proven
+version of `run-java.rs`, including the `resources/jre` fallback layout.
 
-Two behaviours to distrust until you have watched them:
+Prerequisites beyond the macOS list: **MSVC toolchain** and VS Build Tools with "Desktop
+development with C++". `wmic` is **gone** from Windows 11 — anything reaching for it needs
+`Get-CimInstance Win32_Process` instead.
 
-- **`lore clone` is driven through a pseudo-terminal** (`portable-pty`) because the progress bar
-  only draws for an interactive terminal. On Windows that is ConPTY, and the parser splits on
-  `\r` *as well as* `\n` — which matters more there, not less.
-- **Path separators.** The app builds its own relative paths with `/`, and every parser was
-  written against macOS output. If `lore` prints `\` on Windows, the tree and the change list
-  will disagree about what a path is. Check this early; it is the kind of thing that half-works.
+**`cargo test` cannot run while `tauri dev` is running.** Windows locks a running `.exe`
+against relinking, so the build dies on `failed to remove file … Access is denied. (os error 5)`
+— which names a file, not the cause. Stop the app first. On macOS the same two commands
+coexist happily, so the habit does not transfer.
+
+**Clone resolves `lore` by hand, and that is the only call that does.** Everything else goes
+through the shell plugin's `sidecar("lore")`, which appends `.exe` itself; the pseudo-terminal
+needs a real path, so `clone.rs` looks the binary up directly and had the Unix name hardcoded.
+The symptom is worth remembering because it points nowhere near the cause: the host dot green,
+every other command working, and **Clone alone** reporting "The bundled Lore program could not
+be found next to the app" — while it sat right beside the app under a name with four more
+characters. It is the **only** such call — checked: `current_exe` appears nowhere else, and
+every other invocation goes through `sidecar()` or, for the jar and manifest, `resolve()`.
+
+Two predictions that were checked and found harmless: **CRLF** (Git Bash runs `.sh` with CRLF
+correctly, heredocs included, so no `.gitattributes` is needed), and the **jlink read-only**
+workaround, which costs nothing on Windows.
+
+Staging the third-party payload, as it actually went:
+
+- **`lore`** — EpicGames ship a PowerShell installer (`scripts/install.ps1`; the shell one refuses
+  to run on Windows). Pin the version and match the hosts — 0.8.6 here, `lore.exe` and
+  `loreserver.exe` landing in `~/bin`, which is why `LORE_SRC` defaults there on Windows.
+- **the jar** — platform-independent, but **built from a chain**: `alt-p2p-lore` depends on a
+  matching `alt-p2p`, which must be `mvn install`ed first or the build fails on an unresolvable
+  `com.alterante:alt-p2p`. The version is not pinned in `fetch-deps.sh` any more — it takes the
+  newest jar in `target/`, because a pinned name had already gone stale against a version that no
+  longer existed.
+- **the JRE** — `jlink` from any JDK 17+ (26 was used, and the jar runs fine on it). The
+  read-only-output workaround costs nothing here: `chmod` is a no-op on Windows and the rebuild
+  problem it exists for does not arise.
+
+Of the two behaviours to distrust, one is settled and one is still open:
+
+- **Path separators agree. Nothing needed changing.** `lore` 0.8.6+373 prints repository paths
+  with **forward slashes** on Windows (`M StackOBot/Intermediate/CachedAssetRegistryDiscovery.bin`),
+  and `list_dir` builds `rel_path` with an explicit `format!("{rel}/{name}")`. Both sides speak
+  `/`, and a forward-slash path handed *back* to `lore diff` is accepted. Non-zero exits survive
+  too, so `cmd.rs`'s "non-zero is an `Err`" holds.
+  The trap: `lore` **does** print backslashes on Windows — in its own Rust source locations inside
+  error traces (`at lore-storage\src\error.rs:31:9`), never in repository paths. Grepping the
+  output for `\` raises a false alarm.
+- **ConPTY reads fine and never ends.** The `\r` split works, every line parsed, the bar and
+  both summary lines arrived — and the clone hung anyway. Reading to EOF is enough on Unix,
+  where the last slave descriptor closing ends the stream; **conhost keeps the master readable
+  after the child exits**, so the read blocked forever, the sender was never dropped, the
+  `rx.recv()` loop never ended, and `done` was never emitted. A clone that finished in 0.08s
+  left the button saying "Cloning…".
+  The fix is to wait on the child separately and *close the master*, which is what actually
+  ends the read — with a short drain first, because the last thing `lore clone` prints is
+  exactly the summary the totals are parsed from. `pump_pty` is split out from `clone_repo`
+  so this is testable against `cmd /c echo` with no host, no repository and no `lore`; the
+  tests assert with a **deadline**, since the failure is a hang, and a test that hangs reports
+  nothing.
+  ConPTY also opens with a sequence no Unix pty sends — `[?9001h[?1004h[?25l[2J[m[H` plus an
+  OSC title — which `without_ansi` already drops.
+
+### A tunnel outlived the app on Windows — fixed with a job object
+
+Windows does not kill children with their parent, and the pid Tauri hands the registry is the
+**wrapper's**, not the JVM's. So `CommandChild::kill` terminated `run-java.exe` and left the JVM
+running — holding 41400 and its coordinator session, through `kill_all` on exit, through
+Disconnect, through everything. Hit twice in one session; the second time the next connect was
+refused for a port nothing appeared to be using.
+
+`orphans.rs` could not save it: its markers matched the leaked command line perfectly
+(`jar=True connect=True`), but `command_of` returns `None` under `cfg(not(unix))`, so reaping is
+a **silent no-op** on Windows whose tests pass trivially. The recognition is right; it never runs.
+That remains true — the reaper is still a no-op here, and is now genuinely a safety net rather
+than the mechanism.
+
+The fix is in `scripts/run-java.rs`: the wrapper puts the JVM in a **job object with
+`KILL_ON_JOB_CLOSE`**. The handle is deliberately never closed, so the only thing that closes it
+is the wrapper ending — however it ends, `TerminateProcess` and crashes included — and Windows
+then kills the job. One mechanism covering all three `child.kill()` sites plus the crash case.
+
+Proved by the experiment that found the bug, run again: a deliberately long-lived JVM, parent
+killed, child checked three seconds later. **Before: parent dead, JVM alive. After: both dead.**
+Note the first version of that experiment was confounded — the JVM had exited on its own because
+the connect failed — so it must be run with a JVM that would otherwise stay up.
+
+alt-p2p-ui does not solve this and is not a guide here: one `.kill()`, no job object, no reaper.
+Its JVM is short-lived per transfer, so the leak never shows. A tunnel that runs for hours does.
+
+### A tunnel can die upstream and still look alive
+
+Observed: every request hanging, the dot green, ports bound. The tunnel JVM was alive with **0
+CPU and no socket to the relay at all** — only the local client connected to 41400. `lore` connects
+to a listening port and waits forever. Confirmed as transport rather than app by running
+`repository list` through the same tunnel: the call that had returned instantly also hung.
+
+Two separate gaps, and the important one is not in this app:
+
+- **The jar does not notice.** `ConnectCommand` blocks on `mux.awaitClosed()` (relay) or
+  `pc.awaitDisconnect()` (direct), then emits `{"event":"disconnected"}` and exits 0. Here the
+  relay socket was gone and `awaitClosed()` never returned — so no event, no exit, no signal of
+  any kind. Nothing the app can subscribe to. **This is an alt-p2p-lore bug**, in the relay mux.
+- **The app would not have parsed it anyway.** `TunnelEvent` covers `status`, `tunnel_ready` and
+  `error`; `disconnected` is a *distinct event kind*, not a state, so it lands in
+  `#[serde(other)] Unknown`. Mostly harmless — the jar exits straight afterwards and the exit is
+  what the supervisor reacts to — but it means the event carries no weight of its own. Note
+  `TunnelPhase` has no `Disconnected` either, and `Other` is documented as "shown as progress".
+
+So the reconnect logic never fired, correctly: its trigger is an exit or a failure event, and
+neither happened. This is a *third* kind of host failure, distinct from the two M3.11 was built
+from — a sleeping host and a restarted one both ended the connection observably. Detecting it
+needs a probe that goes **through** the tunnel rather than one that checks the local port is
+bound. Note the direct-host probe shares the blind spot in principle: a TCP connect to a
+forwarded port proves the forwarder is up and nothing beyond it.
 
 **Test hosts** (local test infrastructure; **no secrets in this repo** — session keys live in the
 OS keychain, and coordinator details are in the app's host settings):
@@ -297,9 +437,43 @@ OS keychain, and coordinator details are in the app's host settings):
 - a **P2P** host reached through a coordinator, with an identity provider — that one exercises
   sign-in, and its identity port must match the host's exactly.
 
-The direct host is the better first target on a new platform: no tunnel, no keychain, no identity.
-If the keyring change is not done yet, a direct host with a blank auth URL still gets you clone,
-commit, push, sync and locks.
+The direct host is the better first target on a new platform, and that held: it needs no tunnel,
+no keychain and no identity, so it had clone, commit and push working while the P2P side was
+still being untangled.
+
+### A new machine needs three things that live nowhere in git
+
+Every P2P failure on this pass was one of these, and none is a code problem — they are simply
+state that does not travel with a repository or a config, and each fails with an error pointing
+somewhere else:
+
+| Missing | How it presents |
+|---|---|
+| **The identity port** on the host entry (9443 — the `auth_url` loreserver publishes, so not a free choice) | `Not authenticated`. With `identity_port` null, `hostAuthUrl` returns `null`, the app concludes the host needs no sign-in and **never offers one** — so the thing to change is a blank field in a form, and nothing says so. |
+| **A sign-in** for that auth URL | `Not authenticated` again. Identities live in `lore`'s own store, per auth URL, machine-wide; none of the other machine's sign-ins come across. |
+| **The CA** in the OS trust store | `authorization header required`, then `Repository not found` — a *missing grant*'s error, with the grant plainly present. `--log-level debug` names the real cause on one line: `Auth exchange failed … failed to connect to auth endpoint: transport error`. |
+
+The last one is worth dwelling on, because everything visible said the network was fine: TLS 1.3
+completed, ALPN negotiated `h2`, the tunnel forwarded 9443, and `lore repository list` answered
+through it. The service presents a leaf signed by a private CA and sends no issuer, so
+verification failed and no `authorization` header was attached. `tls-native-roots` means the OS
+trust store is the fix — `Import-Certificate -CertStoreLocation Cert:\CurrentUser\Root` is enough,
+and the app's child processes inherit it. Verify the CA against the live endpoint
+(`openssl s_client -CAfile …` → `Verify return code: 0`) before installing it, rather than
+trusting a certificate because its CN looks familiar.
+
+**A method note, since two diagnoses here went wrong before they went right.** Both times the
+fix came from running the failing command *outside the app* — bare `lore clone` reproduced the
+authorization failure exactly, which ruled out the entire UI in one step, and `lore repository
+list` through a hung tunnel proved the transport was dead rather than the clone. When something
+fails in the app, the cheapest next move is to run what the app runs. The traces name the command
+for precisely this reason.
+
+Equally: `curl` reporting `Empty reply from server` against the identity service was **not**
+evidence of a fault — it is an h2-only endpoint and that curl offered HTTP/1.1. I mistook it for
+a symptom, then over-corrected and called my own correct reading wrong. The signal was
+`Verify return code: 21`, visible only once the probe spoke the right protocol. Probe with a tool
+that speaks what the server speaks, or the result means nothing either way.
 
 ## Development Status
 
@@ -307,9 +481,31 @@ M1 (shell), M2 (read-only repository browsing) and M3.1–M3.11 are done: tunnel
 workspaces, sign-in with a pasted token, expiry warnings, repository discovery, clone with a live
 progress bar, commit, sync/push and merge conflicts, branch switch and create, locks — taking,
 releasing, and breaking someone else's with a confirmation that names them — and hosts that come
-and go. M3.12 (end-to-end pass) is under way: parsers re-verified against live 0.8.6 output, and
-the branch-standing fixture gap below closed. What remains is a manual pass through the UI across
-both a P2P host and a direct one.
+and go.
 
-Deferred and known: the app knows nothing about **links**, which cross access boundaries — a
-`Not authorized` naming an unfamiliar resource id will be one, and ARCHITECTURE.md says why.
+**M3.12 (end-to-end pass): done on Windows, and the app now builds and runs on both platforms.**
+Parsers were re-verified against live 0.8.6 output and the branch-standing fixture gap closed;
+the manual pass was then driven against both host kinds on Windows — a direct LAN host and a P2P
+host through the TCP relay. Exercised against live hosts, not only fixtures: tunnel, sign-in,
+repository discovery, a 2.1 GiB clone, commit and push (landed on the host as revision 23,
+attributed correctly), locks taken and released with a second identity's lock present and left
+alone, and orphan cleanup on disconnect.
+
+Still unexercised on Windows: **branch switch/create**, and quitting the app with a tunnel
+connected. Both work on macOS; neither has been watched here.
+
+Deferred and known:
+
+- the app knows nothing about **links**, which cross access boundaries — a `Not authorized`
+  naming an unfamiliar resource id will be one, and ARCHITECTURE.md says why.
+- **`orphans.rs` does nothing on Windows.** `command_of` returns `None` under `cfg(not(unix))`,
+  so the reaper is a no-op whose tests pass trivially. The job object in `run-java.rs` now covers
+  the case it existed for, which makes this a missing safety net rather than a live bug — but a
+  JVM left by a build predating the job object will not be reaped. A Windows implementation wants
+  `Get-CimInstance Win32_Process` (`wmic` is gone from Windows 11), batched into **one** call:
+  `reap` runs synchronously in `setup()` before the window appears, and a PowerShell start costs
+  ~1.7s.
+- **Two faults found on this pass belong to other repositories**, not here. The relay mux does not
+  notice its own connection dying (alt-p2p-lore), and something on ctone produced 28,290 broken
+  HTTP/2 streams during a single clone that nevertheless completed. Both are described under
+  "A tunnel can die upstream and still look alive".

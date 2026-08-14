@@ -33,14 +33,29 @@ serde_json = "1"
 # controlling TTY all produce no bar, while a real terminal does.
 portable-pty = "0.8"
 
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-tokio = { version = "1", features = ["time"] }
-# The PSK and identity token are bearer credentials: they belong in the OS keychain, not in
-# a settings file that syncs and ends up in dotfiles.
-keyring = { version = "3", features = ["apple-native"] }
+tokio = { version = "1", features = ["time", "rt", "sync"] }
 # Session configuration (names, addresses, ports) is not secret and lives in a plain file.
 dirs = "5"
+
+# `libc` is only reached from the Unix arm of `orphans.rs`; everything else here is called
+# unconditionally. These four sat under `cfg(unix)` together, which read as "the Unix bits"
+# but was really "the platform we had built for" — `tokio`, `dirs` and `keyring` are used
+# from code with no `cfg` on it at all, so on Windows the crate simply failed to resolve them.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# The PSK and identity token are bearer credentials: they belong in the OS keychain, not in
+# a settings file that syncs and ends up in dotfiles. `keyring` needs a per-platform backend
+# feature and offers no portable default — naming one platform's backend is what pinned this
+# crate to that platform, so all three are named rather than defaulted.
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["linux-native"] }
 
 
 [dev-dependencies]

@@ -232,6 +232,18 @@ pub async fn start_tunnel(app: AppHandle, config: TunnelConfig) -> Result<String
         .map_err(|e| format!("The bundled connection program is missing ({e})."))?;
 
     let mut args: Vec<String> = vec![
+        // This stream is parsed, so its encoding is part of the protocol.
+        //
+        // Java sets `file.encoding` to UTF-8 but leaves `stdout.encoding` at the platform's
+        // native charset, which on Windows is Cp1252 — so `--json` emits NDJSON that is not
+        // UTF-8 the moment an event carries a non-ASCII character. Measured: `é` arrived as
+        // the single byte `0xE9` and an em dash as `0x97`, both invalid UTF-8, which reaches
+        // the webview as replacement characters and would mangle any accented path in a
+        // tunnel event. Ordinary ASCII traffic hides it completely.
+        //
+        // Must precede `-jar`: everything after that is the program's own argv.
+        "-Dstdout.encoding=UTF-8".into(),
+        "-Dstderr.encoding=UTF-8".into(),
         "-jar".into(),
         jar.to_string_lossy().to_string(),
         "connect".into(),
