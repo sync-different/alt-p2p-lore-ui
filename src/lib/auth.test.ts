@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  accountsAt,
   badgeLabel,
   identitiesAt,
   portOfAuthUrl,
@@ -319,5 +320,43 @@ describe("a lock is not an auth problem", () => {
   it("leaves a genuine permission failure alone", () => {
     const out = explainError("[Error] Not authorized to access repository", "uitest");
     expect(out.message).toMatch(/no access to this repository/i);
+  });
+});
+
+describe("accountsAt", () => {
+  const all = [
+    { auth_url: "https://127.0.0.1:9443", user: "ale", user_id: "u-87c4", expires: null, resource: null },
+    { auth_url: "https://127.0.0.1:9443", user: "uitest", user_id: "u-99f5", expires: null, resource: null },
+    { auth_url: "https://127.0.0.1:9443", user: "ale", user_id: "u-87c4", expires: null, resource: "019f" },
+    { auth_url: "https://other.host:9443", user: "dana", user_id: "u-dana", expires: null, resource: null },
+  ] as never[];
+
+  it("returns the accounts at that host, named as the user knows them", () => {
+    expect(accountsAt(all, "https://127.0.0.1:9443")).toEqual([
+      { id: "u-87c4", name: "ale" },
+      { id: "u-99f5", name: "uitest" },
+    ]);
+  });
+
+  it("returns nothing for a host with no auth URL", () => {
+    // Reported from testing against the LAN host, which has no identity provider:
+    //   $ lore lock query --branch main --owner u-99f5f8484b0a47fd    exit 255
+    //   [Error] Failed to resolve user id from user name:
+    //           Operation not supported: No authentication configured on server
+    // Such a host cannot resolve a user id at all, so nothing should be asked of it.
+    expect(accountsAt(all, null)).toEqual([]);
+    expect(accountsAt(all, "")).toEqual([]);
+    expect(accountsAt(all, undefined)).toEqual([]);
+  });
+
+  it("never mixes in another host's accounts", () => {
+    // Identities are filed per auth URL. Attributing a lock with a different host's ids asks
+    // a server about people it has never heard of — and that is what produced the error
+    // above: ctone's user ids sent to a host that has no identities at all.
+    expect(accountsAt(all, "https://other.host:9443")).toEqual([{ id: "u-dana", name: "dana" }]);
+  });
+
+  it("ignores resource-scoped entries, which are not sign-ins", () => {
+    expect(accountsAt(all, "https://127.0.0.1:9443").filter((a) => a.id === "u-87c4")).toHaveLength(1);
   });
 });

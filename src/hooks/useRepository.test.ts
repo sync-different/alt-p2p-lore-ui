@@ -51,11 +51,12 @@ beforeEach(() => {
   mockListLocks.mockReset();
 });
 
-async function openWith(rootEntries: ReturnType<typeof entry>[]) {
+async function openWith(rootEntries: ReturnType<typeof entry>[], identity?: string) {
   mockOpenRepo.mockResolvedValue({
     path: "/repo",
     status: status(),
     branches: { names: ["main"], current: "main", remote_only: [] },
+    identity: identity ?? null,
   });
   mockListDir.mockResolvedValue(rootEntries);
 
@@ -267,8 +268,57 @@ describe("useRepository", () => {
       await result.current.refreshLocks();
     });
 
-    // Per branch, because `lore lock query --path` is rejected outright.
-    expect(mockListLocks).toHaveBeenCalledWith("/repo", "main");
+    // Per branch, because `lore lock query --path` is rejected outright. The third argument
+    // is the identity to attribute ownership to; null with nobody signed in, which the
+    // backend reads as "cannot tell" rather than "nobody". The fourth is the accounts this
+    // machine knows, used to label a holder with the name the user recognises.
+    expect(mockListLocks).toHaveBeenCalledWith("/repo", "main", null, []);
+  });
+
+  it("attributes locks to the identity the working copy is pinned to", async () => {
+    // A pinned working copy acts as its own user whatever the machine is signed in as —
+    // that is the entire point of pinning — so it must win here too. Getting this backwards
+    // would show one clone's locks as another person's on the same machine.
+    const { result } = await openWith([entry("a.uasset")], "u-99f5f8484b0a47fd");
+    mockListLocks.mockResolvedValue([]);
+
+    act(() => result.current.setSignedInAs("u-signed-in"));
+    await act(async () => {
+      await result.current.refreshLocks();
+    });
+
+    expect(mockListLocks).toHaveBeenLastCalledWith("/repo", "main", "u-99f5f8484b0a47fd", []);
+  });
+
+  it("sends the raw id for ownership, never the name built for error messages", async () => {
+    // The bug this pins, seen live: `setRepoIdentity` carries what `nameForId` produced —
+    // "uitest (u-99f5f8484b0a47fd)" — because it exists to be *read*, in a sentence about a
+    // sign-in that went wrong. Passed to `lock query --owner` it matches no account, so every
+    // lock the user held came back unattributed and was rendered as a colleague's, offering
+    // to break locks they already owned.
+    const { result } = await openWith([entry("a.uasset")], "u-99f5f8484b0a47fd");
+    mockListLocks.mockResolvedValue([]);
+
+    act(() => result.current.setRepoIdentity("uitest (u-99f5f8484b0a47fd)"));
+    await act(async () => {
+      await result.current.refreshLocks();
+    });
+
+    const sent = mockListLocks.mock.lastCall?.[2];
+    expect(sent).toBe("u-99f5f8484b0a47fd");
+    expect(sent).not.toContain(" ");
+  });
+
+  it("falls back to the signed-in identity when the working copy pins none", async () => {
+    const { result } = await openWith([entry("a.uasset")]);
+    mockListLocks.mockResolvedValue([]);
+
+    act(() => result.current.setSignedInAs("u-signed-in"));
+    await act(async () => {
+      await result.current.refreshLocks();
+    });
+
+    expect(mockListLocks).toHaveBeenLastCalledWith("/repo", "main", "u-signed-in", []);
   });
 
   it("closing clears the repository and everything derived from it", async () => {
@@ -336,5 +386,39 @@ describe("useRepository", () => {
     await waitFor(() =>
       expect(result.current.rows.map((r) => r.entry.name)).toEqual(["Content"]),
     );
+  });
+});
+
+describe("attribution against a host with no identity provider", () => {
+  it("asks nobody, even when the working copy is pinned to someone", async () => {
+    // Reported from testing, against the LAN host that has no auth:
+    //   $ lore lock query --branch main --owner u-99f5f8484b0a47fd   exit 255
+    //   [Error] Failed to resolve user id from user name:
+    //           Operation not supported: No authentication configured on server
+    //
+    // ~/demo-fedora was cloned while a ctone account was selected, so its config carries
+    // identity = "u-99f5…" — an account that host has never heard of. A pinned identity is
+    // meaningless where there is nothing to resolve it against.
+    const { result } = await openWith([entry("a.uasset")], "u-99f5f8484b0a47fd");
+    mockListLocks.mockResolvedValue([]);
+
+    act(() => result.current.setCanAttribute(false));
+    await act(async () => {
+      await result.current.refreshLocks();
+    });
+
+    expect(mockListLocks).toHaveBeenLastCalledWith("/repo", "main", null, []);
+  });
+
+  it("still attributes normally on a host that can resolve users", async () => {
+    const { result } = await openWith([entry("a.uasset")], "u-99f5f8484b0a47fd");
+    mockListLocks.mockResolvedValue([]);
+
+    act(() => result.current.setCanAttribute(true));
+    await act(async () => {
+      await result.current.refreshLocks();
+    });
+
+    expect(mockListLocks).toHaveBeenLastCalledWith("/repo", "main", "u-99f5f8484b0a47fd", []);
   });
 });

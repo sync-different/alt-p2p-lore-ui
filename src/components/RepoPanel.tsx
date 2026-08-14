@@ -2,7 +2,9 @@ import { useState } from "react";
 import { FileTree } from "./FileTree";
 import { ChangesPanel } from "./ChangesPanel";
 import { BranchBar } from "./BranchBar";
-import { filterPaths } from "../lib/repo";
+import { LockBar } from "./LockBar";
+import { BreakLockDialog } from "./BreakLockDialog";
+import { filterPaths, type FileLock } from "../lib/repo";
 import type { useRepository } from "../hooks/useRepository";
 
 /**
@@ -30,6 +32,8 @@ export function RepoPanel({
   // Flat vs nested for the changed view. With 2163 changed files a tree is easier to
   // navigate; with a handful, a flat list shows every path at once and saves the expanding.
   const [flat, setFlat] = useState(false);
+  /** The lock a confirmation is open for; held as the lock, not the path — see below. */
+  const [breaking, setBreaking] = useState<FileLock | null>(null);
 
   const visible = filter
     ? repo.rows.filter((r) => filterPaths([{ path: r.entry.rel_path }], filter).length > 0)
@@ -157,22 +161,30 @@ export function RepoPanel({
 
       {/* Lock state is a fact about other people's work, so its absence must be visible.
           "Unknown" is not the same as "none", and only one of them is safe to act on. */}
-      <div className="flex shrink-0 items-center gap-2 border-t border-line px-3 py-1.5">
-        <span className="text-ink-2">
-          {repo.locksAvailable
-            ? repo.locks.size === 0
-              ? "No files locked"
-              : `${repo.locks.size} file${repo.locks.size > 1 ? "s" : ""} locked`
-            : "Locks unknown — not connected"}
-        </span>
-        <button
-          onClick={() => void repo.refreshLocks(true)}
-          title="Check who has files locked (needs a connection)"
-          className="ml-auto rounded px-1.5 py-0.5 text-ink-2 hover:bg-surface-2 hover:text-ink-0"
-        >
-          🔒
-        </button>
-      </div>
+      <LockBar
+        selected={repo.selected}
+        locks={repo.locks}
+        available={repo.locksAvailable}
+        busy={repo.locking}
+        onTake={(p) => void repo.takeLocks([p])}
+        onRelease={(p) => void repo.dropLocks([p], false)}
+        onBreak={(l) => setBreaking(l)}
+        onRefresh={() => void repo.refreshLocks(true)}
+      />
+
+      {/* Breaking a lock is confirmed against the lock as it was read, not against the path:
+          if the holder changed since, the dialog was describing somebody else's situation. */}
+      {breaking && (
+        <BreakLockDialog
+          locks={[breaking]}
+          busy={repo.locking}
+          onCancel={() => setBreaking(null)}
+          onConfirm={() => {
+            void repo.dropLocks([breaking.path], true);
+            setBreaking(null);
+          }}
+        />
+      )}
 
       {repo.error && (
         <p className="shrink-0 border-t border-line px-3 py-2 text-danger">{repo.error}</p>

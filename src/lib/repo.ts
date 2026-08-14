@@ -81,6 +81,35 @@ export interface FileLock {
   owner: string;
   /** Present only from `lock status`; `lock query` reports the branch instead. */
   since: string | null;
+  /**
+   * What this app calls the holder, when it recognises them.
+   *
+   * `owner` is whatever the host rendered, and it is not stable — one lock has printed as
+   * `Alejandro`, `ale` and `u-87c4…`. Prefer this so the name matches the rest of the UI.
+   */
+  known_as: string | null;
+  /**
+   * Whether we hold it. `null` means unknown, and is not the same as `false`.
+   *
+   * Never derived from `owner`, which is a display name that differs between workspaces for
+   * one and the same lock. The backend resolves it server-side.
+   */
+  mine: boolean | null;
+}
+
+/** An account this machine has signed in as: the id `--owner` resolves, and what we call it. */
+export interface KnownIdentity {
+  id: string;
+  name: string;
+}
+
+/** What a lock call actually did — a batch can be partly refused. */
+export interface LockOutcome {
+  acquired: string[];
+  already_owned: string[];
+  released: string[];
+  /** Refused because someone else holds them, named. */
+  blocked: FileLock[];
 }
 
 export interface DirEntry {
@@ -100,8 +129,21 @@ export const listDir = (root: string, rel: string) => invoke<DirEntry[]>("list_d
 export const fileDiff = (path: string, file: string) =>
   invoke<FileDiff>("file_diff", { path, file });
 export const isLoreRepo = (path: string) => invoke<boolean>("is_lore_repo", { path });
-export const listLocks = (path: string, branch: string) =>
-  invoke<FileLock[]>("list_locks", { path, branch });
+
+export const listLocks = (
+  path: string,
+  branch: string,
+  identity?: string | null,
+  known: KnownIdentity[] = [],
+) => invoke<FileLock[]>("list_locks", { path, branch, identity: identity ?? null, known });
+export const acquireLocks = (
+  path: string,
+  paths: string[],
+  identity?: string | null,
+  known: KnownIdentity[] = [],
+) => invoke<LockOutcome>("acquire_locks", { path, paths, identity: identity ?? null, known });
+export const releaseLocks = (path: string, paths: string[], force: boolean) =>
+  invoke<LockOutcome>("release_locks", { path, paths, force });
 
 /** Locks keyed by path, for decorating tree rows in one pass. */
 export function lockIndex(locks: FileLock[]): Map<string, FileLock> {

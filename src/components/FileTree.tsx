@@ -65,13 +65,22 @@ function RowContent({
 
       {/* Who holds this file. For an artist working on binary assets that cannot be
           merged, this is often the most important thing on the row — so it sits next to
-          the name rather than after the change badge. */}
+          the name rather than after the change badge.
+
+          Ours and theirs are told apart by colour, because the two mean opposite things: one
+          says "you may edit this", the other "someone else is". Ownership comes from the
+          resolved flag rather than the owner's name, which renders differently depending on
+          which workspace is asking. */}
       {lock && (
         <span
-          className="shrink-0 text-warn"
-          title={`Locked by ${lock.owner}${lock.since ? ` since ${lock.since}` : ""}`}
+          className={`shrink-0 ${lock.mine ? "text-ok" : "text-warn"}`}
+          title={
+            lock.mine
+              ? `Locked by you${lock.since ? ` since ${lock.since}` : ""}`
+              : `Locked by ${lock.known_as ?? lock.owner}${lock.since ? ` since ${lock.since}` : ""}`
+          }
         >
-          🔒
+          {lock.mine ? "🔓" : "🔒"}
         </span>
       )}
 

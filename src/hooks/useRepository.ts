@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  acquireLocks,
   changeIndex,
   listDir,
   listLocks,
   lockIndex,
+  releaseLocks,
   openRepo,
   abortMerge,
   checkSwitchBranch,
@@ -18,6 +20,7 @@ import {
   type ChangeKind,
   type DirEntry,
   type FileLock,
+  type KnownIdentity,
   type RepoInfo,
   type RepoStatus,
 } from "../lib/repo";
@@ -25,6 +28,7 @@ import { flattenTree, toggleExpanded, treeFromPaths, type LoadedDirs } from "../
 import { rememberRecent, repoName } from "../lib/recents";
 import type { NoticeLevel } from "../types/app";
 import { explainError } from "../lib/auth";
+import { describeOutcome, explainBlocked } from "../lib/locks";
 import { explainUnreachable, type Reach } from "../lib/reachability";
 
 /** Reports what happened, so the Activity pane can show it. Optional so tests need none. */
@@ -226,6 +230,52 @@ export function useRepository(onEvent?: OnEvent) {
   }, [refreshStatus]);
 
   /**
+   * The identity whose locks count as *ours*.
+   *
+   * A pinned working copy acts as its own user whatever the machine is signed in as — that is
+   * the whole point of pinning — so it wins. With neither, ownership is unknown, and the lock
+   * list says so instead of guessing: an unattributed lock is treated as someone else's.
+   *
+   * **Taken from `info.identity`, never from `repoIdentityRef`.** The latter holds what
+   * `nameForId` produced — `"uitest (u-99f5f8484b0a47fd)"` — which exists to be read in an
+   * error message and matches no account when sent as `--owner`. Using it here made every one
+   * of your own locks look like a colleague's, offering to break locks you already held. The
+   * two are different kinds of thing and must not share a channel: `info.identity` is the raw
+   * id out of `.lore/config.toml`, which is also the value that is correct the moment `info`
+   * exists, with no effect having to have run first.
+   */
+  const effectiveIdentity = useCallback(
+    () => (canAttributeRef.current ? (info?.identity ?? signedInAsRef.current) : null),
+    [info],
+  );
+
+  /**
+   * The accounts this machine has signed in as at this host, so a lock held by one of them can
+   * be labelled with the name the user knows rather than whatever the host rendered.
+   */
+  const knownIdentitiesRef = useRef<KnownIdentity[]>([]);
+  const setKnownIdentities = useCallback((list: KnownIdentity[]) => {
+    knownIdentitiesRef.current = list;
+  }, []);
+
+  /**
+   * Whether this repository's host can attribute a lock to a person at all.
+   *
+   * False for a host with no identity provider. Such a server cannot resolve a user id —
+   * `lore` answers `Failed to resolve user id from user name: No authentication configured
+   * on server` — so asking is an error per refresh and can never succeed.
+   *
+   * It has to be a separate fact from "do we know any accounts", because a working copy can
+   * still be *pinned* to an identity that means nothing here: this one was cloned while a
+   * ctone account was selected, so `.lore/config.toml` carries `identity = "u-99f5…"` against
+   * a host that has never heard of it.
+   */
+  const canAttributeRef = useRef(true);
+  const setCanAttribute = useCallback((can: boolean) => {
+    canAttributeRef.current = can;
+  }, []);
+
+  /**
    * Read every lock on the current branch.
    *
    * Failure sets `locksAvailable = false` rather than an empty map. Reporting "no locks"
@@ -238,7 +288,7 @@ export function useRepository(onEvent?: OnEvent) {
       if (!info || !branch) return;
       const gen = generation.current;
       try {
-        const found = await listLocks(info.path, branch);
+        const found = await listLocks(info.path, branch, effectiveIdentity(), knownIdentitiesRef.current);
         if (gen !== generation.current) return;
         setLocks(lockIndex(found));
         const wasUnavailable = !locksAvailableRef.current;
@@ -326,6 +376,90 @@ export function useRepository(onEvent?: OnEvent) {
         onEvent?.("error", explainError(String(e), signedInAsRef.current, repoIdentityRef.current).message);
       } finally {
         setStaging(false);
+      }
+    },
+    [info, onEvent],
+  );
+
+  /**
+   * Take locks, and give them back.
+   *
+   * Both re-read the lock list afterwards rather than patching the map: a lock is state on the
+   * host, and the call that just changed it is also the moment somebody else's change becomes
+   * visible. Patching locally would show a private version of shared state.
+   *
+   * A refusal is not thrown — the backend returns the holders it found — because "Dana has it"
+   * is an answer to the question, not a failure of it, and it is the answer the user needs.
+   */
+  const [locking, setLocking] = useState(false);
+  const takeLocks = useCallback(
+    async (paths: string[]) => {
+      if (!info || paths.length === 0) return;
+      setLocking(true);
+      try {
+        const outcome = await acquireLocks(
+          info.path,
+          paths,
+          effectiveIdentity(),
+          knownIdentitiesRef.current,
+        );
+        if (outcome.blocked.length > 0) {
+          onEvent?.("warn", explainBlocked(outcome.blocked));
+        } else {
+          onEvent?.("info", describeOutcome(outcome));
+        }
+        await refreshLocksRef.current?.(false);
+        return outcome;
+      } catch (e) {
+        onEvent?.(
+          "error",
+          explainError(
+            explainUnreachable(String(e), reachRef.current),
+            signedInAsRef.current,
+            repoIdentityRef.current,
+          ).message,
+        );
+      } finally {
+        setLocking(false);
+      }
+    },
+    [info, onEvent, effectiveIdentity],
+  );
+
+  /**
+   * @param force breaking someone else's lock rather than dropping our own.
+   *
+   * The CLI does not distinguish these — releasing another person's lock simply works, with no
+   * `--force` required — so the distinction is made here and confirmed in the UI before it
+   * reaches this point.
+   */
+  const dropLocks = useCallback(
+    async (paths: string[], force = false) => {
+      if (!info || paths.length === 0) return;
+      setLocking(true);
+      try {
+        const outcome = await releaseLocks(info.path, paths, force);
+        onEvent?.(
+          force ? "warn" : "info",
+          force
+            ? `Broke ${outcome.released.length || paths.length} lock${
+                (outcome.released.length || paths.length) === 1 ? "" : "s"
+              } held by someone else.`
+            : describeOutcome(outcome),
+        );
+        await refreshLocksRef.current?.(false);
+        return outcome;
+      } catch (e) {
+        onEvent?.(
+          "error",
+          explainError(
+            explainUnreachable(String(e), reachRef.current),
+            signedInAsRef.current,
+            repoIdentityRef.current,
+          ).message,
+        );
+      } finally {
+        setLocking(false);
       }
     },
     [info, onEvent],
@@ -453,9 +587,14 @@ export function useRepository(onEvent?: OnEvent) {
     stage,
     unstage,
     staging,
+    takeLocks,
+    dropLocks,
+    locking,
     setReach,
     setSignedInAs,
     setRepoIdentity,
+    setKnownIdentities,
+    setCanAttribute,
     info,
     error,
     busy,

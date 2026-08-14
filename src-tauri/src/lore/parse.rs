@@ -415,6 +415,22 @@ pub struct FileLock {
     /// When it was taken, if this came from `lock status`. `lock query` reports the branch
     /// instead, so this is absent there.
     pub since: Option<String>,
+    /// What *this app* calls the holder, when it recognises them.
+    ///
+    /// `owner` is whatever the host chose to render, and it is not stable: one unchanged lock
+    /// has printed as `Alejandro`, `ale` and `u-87c4b8c8b7f44fc1`. The user knows that account
+    /// as `ale` — it is what they signed in as and what every other panel calls it — so where
+    /// the holder matches a known identity, that name is used instead. `None` for a colleague
+    /// this machine has never signed in as, where the host's own string is all there is.
+    pub known_as: Option<String>,
+    /// Whether the identity in question holds it — `None` when that could not be established.
+    ///
+    /// Deliberately not derived from `owner`: the same lock prints as `Alejandro` in the
+    /// workspace holding it and `ale` in another on the same machine, so the printed name
+    /// answers "what shall I call them", never "is this mine". It is filled in by
+    /// [`super::locks::list_locks`] from a server-resolved `--owner` query, and left unknown
+    /// rather than guessed.
+    pub mine: Option<bool>,
 }
 
 /// Parse `lore lock query --branch <b>` or `lore lock status <path>`.
@@ -459,7 +475,13 @@ pub fn parse_locks(out: &str) -> Vec<FileLock> {
             Some(tail.trim().to_string())
         };
 
-        locks.push(FileLock { path: path.to_string(), owner: owner.to_string(), since });
+        locks.push(FileLock {
+            path: path.to_string(),
+            owner: owner.to_string(),
+            since,
+            known_as: None,
+            mine: None,
+        });
     }
 
     locks

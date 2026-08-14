@@ -3,5 +3,6 @@ pub mod auth;
 pub mod clone;
 pub mod cmd;
 pub mod content;
+pub mod locks;
 pub mod parse;
 pub mod repo;

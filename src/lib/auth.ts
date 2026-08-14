@@ -219,6 +219,28 @@ export function identitiesAt(all: AuthIdentity[], authUrl: string | null | undef
     .filter(Boolean);
 }
 
+/**
+ * The accounts signed in at one host, as id + the name to show for them.
+ *
+ * Used to attribute locks. Two things it must get right, both learned the hard way:
+ *
+ * - **Per host, never globally.** Identities are filed per auth URL. Attributing a lock with
+ *   another host's accounts asks that host to resolve a user it has never heard of.
+ * - **Empty when the host has no auth URL.** A host with no identity provider cannot resolve
+ *   a user id at all — `lore` answers `No authentication configured on server` — so there is
+ *   nothing to ask and no reason to ask it.
+ */
+export function accountsAt(
+  all: AuthIdentity[],
+  authUrl: string | null | undefined,
+): { id: string; name: string }[] {
+  const wanted = authorityOfUrl(authUrl);
+  if (!wanted) return [];
+  return all
+    .filter((i) => !i.resource && authorityOfUrl(i.auth_url) === wanted && i.user_id)
+    .map((i) => ({ id: i.user_id!, name: i.user ?? i.user_id! }));
+}
+
 function authorityOfUrl(url: string | null | undefined): string | null {
   if (!url) return null;
   const rest = url.includes("://") ? url.split("://")[1] : url;

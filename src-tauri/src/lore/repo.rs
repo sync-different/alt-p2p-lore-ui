@@ -649,33 +649,8 @@ pub fn list_dir(root: String, rel: String) -> Result<Vec<DirEntry>, String> {
     Ok(out)
 }
 
-/// Who holds a lock on what, for the whole branch.
-///
-/// Queried per branch rather than per file: `lore lock query --path` is rejected outright
-/// ("unsupported lock query combination"), and probing 2163 files individually would be
-/// absurd even if it were allowed. One call decorates the entire tree.
-///
-/// Locks live on the host, so this needs a live session — the same dependency `lore diff`
-/// has. Disconnected, it fails rather than reporting "no locks", because silently claiming
-/// a file is free when it may be held by a colleague is the one answer that could cause
-/// an artist to lose work.
-#[tauri::command]
-pub async fn list_locks(
-    app: AppHandle,
-    path: String,
-    branch: String,
-) -> Result<Vec<super::parse::FileLock>, String> {
-    let cwd = PathBuf::from(path);
-    let out = cmd::run(
-        &app,
-        &cwd,
-        vec!["lock".into(), "query".into(), "--branch".into(), branch],
-        None,
-    )
-    .await
-    .map_err(to_message)?;
-    Ok(super::parse::parse_locks(&out.stdout))
-}
+// Locks live in `super::locks`: reading them is only half the story once they can also be
+// taken and broken, and the rules about ownership are worth keeping in one place.
 
 #[cfg(test)]
 mod remote_tests {
