@@ -183,6 +183,29 @@ export function CloneDialog({
     };
   }, [host?.authUrl]);
 
+  /**
+   * Drop the chosen identity when the newly chosen host does not know it.
+   *
+   * The identity is seeded from the workspace that was active when the dialog opened, and
+   * the list refetches when the host changes — but the *choice* survived, and the choice is
+   * what `lore` writes into the new working copy's config. A real clone came out carrying
+   * `identity = "u-99f5…"`, a ctone account, against a host with no identity provider at all.
+   *
+   * The select gave no clue: a `<select>` whose value matches no option reads as empty in the
+   * DOM while React still holds the old value, so it *looked* cleared and was not. Only the
+   * argument reaching `clone_repo` tells the truth, which is what the test asserts on.
+   *
+   * Kept where a host shares the account, so choosing a host does not silently undo the step
+   * before it.
+   */
+  useEffect(() => {
+    if (!identity) return;
+    // Nothing known yet is not the same as known-absent: a host with an auth URL whose list
+    // has not arrived must not have the choice torn out from under it.
+    if (host?.authUrl && identities.length === 0) return;
+    if (!identities.some((i) => i.user_id === identity)) setIdentity("");
+  }, [host?.authUrl, identities, identity]);
+
   useEffect(() => {
     if (host == null) return;
     let live = true;

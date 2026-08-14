@@ -237,3 +237,104 @@ describe("CloneDialog", () => {
     expect(onCloned).not.toHaveBeenCalled();
   });
 });
+
+describe("identity when the host changes", () => {
+  const authHost = {
+    id: "h1",
+    name: "ctone",
+    baseUrl: "grpc://127.0.0.1:41400",
+    authUrl: "https://127.0.0.1:9443",
+  };
+  const openHost = {
+    id: "h2",
+    name: "fedora",
+    baseUrl: "grpc://192.168.1.224:41337",
+    authUrl: null,
+  };
+
+  it("does not carry an identity onto a host that has never heard of it", async () => {
+    // Reproduced from a real clone: ~/demo-fedora came out carrying
+    //   identity = "u-99f5f8484b0a47fd"
+    // a ctone account, against a host with no identity provider at all. The dialog seeds the
+    // identity from the *active* workspace's pin and refetches the identity list when the host
+    // changes — but never revisits the choice itself, so it survives the switch.
+    answersWith([{ name: "lantest", id: "01a0" }], undefined, identities);
+    render(
+      <CloneDialog
+        hosts={[authHost, openHost]}
+        defaultHostId="h1"
+        defaultIdentity="u-uitest"
+        onCancel={vi.fn()}
+        onCloned={vi.fn()}
+      />,
+    );
+
+    const actsAs = () =>
+      screen.getAllByRole("combobox").find((s) =>
+        Array.from((s as HTMLSelectElement).options).some((o) =>
+          /whoever is signed in/i.test(o.textContent ?? ""),
+        ),
+      ) as HTMLSelectElement;
+    const hostSelect = () =>
+      screen.getAllByRole("combobox").find((s) =>
+        Array.from((s as HTMLSelectElement).options).some((o) => o.value === "h2"),
+      ) as HTMLSelectElement;
+
+    // The pin is in force while the auth host is selected.
+    await waitFor(() => expect(actsAs().value).toBe("u-uitest"));
+
+    // Switch to the host with no identities.
+    fireEvent.change(hostSelect(), { target: { value: "h2" } });
+
+    // The select *displays* empty, because the option no longer exists — but that proves
+    // nothing. A <select> whose value matches no option reads "" in the DOM while React
+    // still holds the old value, and it is the held value that reaches clone_repo and is
+    // written into .lore/config.toml. So assert on the argument, not on the control.
+    await waitFor(() => expect(actsAs().value).toBe(""));
+
+    await waitFor(() => expect(screen.getByRole("option", { name: "lantest" })).toBeTruthy());
+    type(/Users\/you/, "/work/lantest");
+    fireEvent.click(screen.getByRole("button", { name: /^clone$/i }));
+
+    await waitFor(() => {
+      // The LAST clone, not the first: this mock is shared across the file and deliberately
+      // never reset (resetting makes a handled throw surface as an unhandled runner error),
+      // so `find` returns some earlier test's call and would pass or fail for the wrong run.
+      const calls = mockInvoke.mock.calls.filter((c) => c[0] === "clone_repo");
+      expect(calls.length).toBeGreaterThan(0);
+      const last = calls[calls.length - 1];
+      expect((last[1] as { identity: string | null }).identity).toBeNull();
+    });
+  });
+
+  it("keeps an identity that the newly chosen host does know", async () => {
+    // The other half: switching between two hosts that share an account must not throw the
+    // choice away, or picking a host becomes a step that silently undoes the previous one.
+    const second = { ...authHost, id: "h3", name: "ctone-b" };
+    answersWith([{ name: "demo", id: "019f" }], undefined, identities);
+    render(
+      <CloneDialog
+        hosts={[authHost, second]}
+        defaultHostId="h1"
+        defaultIdentity="u-uitest"
+        onCancel={vi.fn()}
+        onCloned={vi.fn()}
+      />,
+    );
+    const actsAs = () =>
+      screen.getAllByRole("combobox").find((s) =>
+        Array.from((s as HTMLSelectElement).options).some((o) =>
+          /whoever is signed in/i.test(o.textContent ?? ""),
+        ),
+      ) as HTMLSelectElement;
+    const hostSelect = () =>
+      screen.getAllByRole("combobox").find((s) =>
+        Array.from((s as HTMLSelectElement).options).some((o) => o.value === "h3"),
+      ) as HTMLSelectElement;
+
+    await waitFor(() => expect(actsAs().value).toBe("u-uitest"));
+
+    fireEvent.change(hostSelect(), { target: { value: "h3" } });
+    await waitFor(() => expect(actsAs().value).toBe("u-uitest"));
+  });
+});
