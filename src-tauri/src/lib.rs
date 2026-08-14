@@ -2,6 +2,7 @@ pub mod lore;
 pub mod tunnel;
 mod prereq;
 pub mod session;
+pub mod probe;
 pub mod registry;
 pub mod workspace;
 pub mod orphans;
@@ -40,6 +41,7 @@ pub fn run() {
             lore::repo::file_diff,
             lore::repo::list_dir,
             lore::content::read_file,
+            probe::probe_host,
             lore::locks::list_locks,
             lore::locks::acquire_locks,
             lore::locks::release_locks,

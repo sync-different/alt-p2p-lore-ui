@@ -285,7 +285,7 @@ pub async fn unstage_paths(app: AppHandle, path: String, paths: Vec<String>) -> 
 
 /// Read status the one way it is ever read.
 async fn read_status(app: &AppHandle, cwd: &Path) -> Result<RepoStatus, String> {
-    let out = cmd::run(app, cwd, status_args(), None).await.map_err(to_message)?;
+    let out = cmd::run(app, cwd, status_args(), Some(cmd::INTERACTIVE_TIMEOUT)).await.map_err(to_message)?;
     Ok(parse::parse_status(&out.stdout))
 }
 

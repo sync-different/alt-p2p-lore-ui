@@ -192,6 +192,31 @@ the backend spawns (`lore://command`, emitted from `cmd::run`).
   `Activity` pane; that component's tests were ported to `Console.test.tsx` rather than deleted,
   since they pin the session-labelling fix.
 
+### Hosts come and go, and that is not an error
+
+M3.11, written from two real failures rather than from imagination: a host that went to sleep
+mid-session, and one restarted underneath a push.
+
+- **One read at a time.** Window focus, the refresh button and the end of every write all
+  trigger a re-read, so overlap is ordinary — and against an unresponsive host their deadlines
+  simply add up. Observed: `lore status --scan` at 22.4s, 19.2s and 10.3s in a row. A refresh
+  arriving during one now queues a single follow-up, which never announces itself.
+- **Reads have their own deadlines.** `INTERACTIVE_TIMEOUT` 20s, `HOST_READ_TIMEOUT` 10s, against
+  the 120s default that is sized for transfers. Locks match what `lore` itself does — it gives up
+  at ~10s — so a longer wait would only add silence after the CLI had already decided.
+- **A direct host is probed, never assumed.** It has no process to watch, and the dot was
+  hardcoded green: a switched-off machine looked exactly like a serving one. A TCP connect
+  every 15s and on focus. `refused` (0.2s) and `unreachable` are kept apart because they send
+  you to different places — start the service, or go and look at the machine.
+- **Reads and transport recover automatically; writes never do.** A host that returns re-reads
+  status and locks, and a dead tunnel is put back up (3 widening attempts, then it says so).
+  A push that failed is *raised* when the host comes back, with a button — never re-sent. The
+  difference between "your work is waiting" and "your work has just gone out" is something a
+  person needs to have chosen.
+- **`lore status --scan` succeeds with the host down**, omitting the remote lines rather than
+  failing. The standing falls to `Unknown`, which already refuses to push — but note that the
+  app learns a host is unreachable from a *missing line*, not from an exit code.
+
 ### Testing traps met here
 
 - **A count of one is not a proof of one.** Every cardinality bug looked correct with one host,
@@ -202,6 +227,10 @@ the backend spawns (`lore://command`, emitted from `cmd::run`).
   unhandled runner error**. Set implementations per test instead.
 - Fixtures live in `src-tauri/tests/fixtures/`, captured from the real CLI. Regenerate rather than
   hand-edit; a fixture that never existed proves nothing.
+- **A tested policy is not a wired policy.** The reconnect decision had six tests and worked
+  perfectly; the one line that *called* it failed to be inserted by an edit, so a killed tunnel
+  went red and sat there. Every test still passed, because they all exercised the function in
+  isolation. Where a decision is reached through an event, test the path from the event.
 - **Verify you launched what you just built.** A successful `npm run tauri build` is not evidence:
   the product was renamed, so yesterday's `Alterante Lore.app` sat beside today's `alt-lore
   Desktop.app` and sorted *first* — `ls | head -1` launched a stale bundle that looked identical.
@@ -210,11 +239,11 @@ the backend spawns (`lore://command`, emitted from `cmd::run`).
 
 ## Development Status
 
-M1 (shell), M2 (read-only repository browsing) and M3.1–M3.10 are done: tunnels, hosts and
+M1 (shell), M2 (read-only repository browsing) and M3.1–M3.11 are done: tunnels, hosts and
 workspaces, sign-in with a pasted token, expiry warnings, repository discovery, clone with a live
-progress bar, commit, sync/push and merge conflicts, branch switch and create, and locks — taking,
-releasing, and breaking someone else's with a confirmation that names them. Next: reconnect and an
-end-to-end pass (M3.11–3.12).
+progress bar, commit, sync/push and merge conflicts, branch switch and create, locks — taking,
+releasing, and breaking someone else's with a confirmation that names them — and hosts that come
+and go. Next: an end-to-end pass (M3.12).
 
 Deferred and known: the app knows nothing about **links**, which cross access boundaries — a
 `Not authorized` naming an unfamiliar resource id will be one, and ARCHITECTURE.md says why.

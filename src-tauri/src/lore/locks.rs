@@ -138,7 +138,7 @@ pub async fn list_locks(
         &app,
         &cwd,
         vec!["lock".into(), "query".into(), "--branch".into(), branch.clone()],
-        None,
+        Some(cmd::HOST_READ_TIMEOUT),
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -190,7 +190,7 @@ async fn attribute(
         // so trying the rest produces one identical error per account, per refresh, in the
         // user's console. The locks themselves are unaffected — they are simply unattributed,
         // which `mine: None` already means.
-        let Ok(o) = cmd::run(app, cwd, args, None).await else { break };
+        let Ok(o) = cmd::run(app, cwd, args, Some(cmd::HOST_READ_TIMEOUT)).await else { break };
 
         let held: std::collections::HashSet<String> =
             parse_locks(&o.stdout).into_iter().map(|l| l.path).collect();
@@ -289,7 +289,7 @@ async fn held_by_others(
     identity: Option<&str>,
     mut accounts: Vec<KnownIdentity>,
 ) -> Vec<FileLock> {
-    let Ok(all) = cmd::run(app, cwd, vec!["lock".into(), "query".into()], None).await else {
+    let Ok(all) = cmd::run(app, cwd, vec!["lock".into(), "query".into()], Some(cmd::HOST_READ_TIMEOUT)).await else {
         return Vec::new();
     };
 

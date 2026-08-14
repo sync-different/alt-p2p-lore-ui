@@ -2,6 +2,7 @@ import type { SessionConfig } from "../lib/sessions";
 import type { TunnelInfo } from "../hooks/useTunnels";
 import { phaseToStatus } from "../hooks/useTunnels";
 import type { SessionStatus } from "../types/app";
+import { probeLabel, probeStatus, type HostProbe } from "../lib/hosts";
 
 /**
  * The hosts this app can connect to, and which of them is carrying traffic.
@@ -39,10 +40,18 @@ export function HostBar({
   onDisconnect,
   onEdit,
   onAdd,
+  health,
   children,
 }: {
   hosts: SessionConfig[];
   tunnelFor: (sessionId: string) => TunnelInfo | undefined;
+  /**
+   * Probe result per host id, for hosts with no tunnel to speak for them.
+   *
+   * A direct host used to be drawn green unconditionally — a machine that was switched off
+   * looked exactly like one serving happily.
+   */
+  health?: Map<string, HostProbe>;
   onConnect: (host: SessionConfig) => void;
   onDisconnect: (host: SessionConfig) => void;
   onEdit: (host: SessionConfig) => void;
@@ -63,18 +72,20 @@ export function HostBar({
         // not, and finding out is the job of the next operation rather than a button.
         const direct = (h.kind ?? "p2p") === "direct";
         const t = tunnelFor(h.session_id);
-        const status = direct ? "connected" : phaseToStatus(t?.phase, t?.mode);
+        const probe = health?.get(h.id);
+        const status = direct ? probeStatus(probe) : phaseToStatus(t?.phase, t?.mode);
         const live = status === "connected" || status === "relay";
         const busy = status === "connecting";
         return (
           <span key={h.id} className="flex items-center gap-1.5">
-            <span
-              className={`h-2 w-2 shrink-0 rounded-full ${direct ? "bg-ok/60" : DOT[status]}`}
-              aria-hidden
-            />
+            <span className={`h-2 w-2 shrink-0 rounded-full ${DOT[status]}`} aria-hidden />
             <span
               className="text-ink-1"
-              title={direct ? `${h.name} — direct, ${h.base_url ?? ""}` : `${h.name} — ${WORD[status]}`}
+              title={
+                direct
+                  ? probeLabel(probe, h.name, h.base_url ?? "")
+                  : `${h.name} — ${WORD[status]}`
+              }
             >
               {h.name}
               {direct && <span className="text-ink-2"> · direct</span>}

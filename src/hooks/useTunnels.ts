@@ -77,7 +77,17 @@ export function phaseToStatus(phase: TunnelPhase | undefined, mode?: TunnelMode 
   return "connecting";
 }
 
-export function useTunnels(onEvent?: (level: "info" | "success" | "warn" | "error", message: string, session?: string) => void) {
+/** A tunnel process ended. `intentional` is the registry's record that we asked it to. */
+export interface TunnelExit {
+  sessionId: string;
+  sessionName: string;
+  intentional: boolean;
+}
+
+export function useTunnels(
+  onEvent?: (level: "info" | "success" | "warn" | "error", message: string, session?: string) => void,
+  onExit?: (exit: TunnelExit) => void,
+) {
   const [tunnels, setTunnels] = useState<Map<string, TunnelInfo>>(new Map());
 
   /**
@@ -92,6 +102,10 @@ export function useTunnels(onEvent?: (level: "info" | "success" | "warn" | "erro
    * until the next caller forgets; this cannot be got wrong from outside.
    */
   const onEventRef = useRef(onEvent);
+  // Same reasoning for the exit callback: held by reference so subscribing never depends on
+  // the caller's memoisation.
+  const onExitRef = useRef(onExit);
+  onExitRef.current = onExit;
   useEffect(() => {
     onEventRef.current = onEvent;
   });
@@ -140,6 +154,18 @@ export function useTunnels(onEvent?: (level: "info" | "success" | "warn" | "erro
         notify?.("info", u.detail, who);
       } else if (u.kind === "failed" || u.kind === "exited") {
         notify?.("error", u.detail, who);
+      }
+
+      // Reported separately from the notice, because reconnecting needs the session's
+      // identity and the *intent* behind the exit. A killed child exits exactly like a
+      // crashed one, so only the registry knows which this was — and a notice string is
+      // not something to make that decision from.
+      if (u.kind === "exited") {
+        onExitRef.current?.({
+          sessionId: u.session_id,
+          sessionName: u.session_name,
+          intentional: u.phase === "stopped",
+        });
       }
     });
     return () => {

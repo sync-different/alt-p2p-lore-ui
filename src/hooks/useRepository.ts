@@ -29,7 +29,7 @@ import { rememberRecent, repoName } from "../lib/recents";
 import type { NoticeLevel } from "../types/app";
 import { explainError } from "../lib/auth";
 import { describeOutcome, explainBlocked } from "../lib/locks";
-import { explainUnreachable, type Reach } from "../lib/reachability";
+import { explainUnreachable, looksUnreachable, type Reach } from "../lib/reachability";
 
 /** Reports what happened, so the Activity pane can show it. Optional so tests need none. */
 export type OnEvent = (level: NoticeLevel, message: string) => void;
@@ -83,6 +83,16 @@ export function useRepository(onEvent?: OnEvent) {
   // refreshStatus needs refreshLocks, which is declared after it; a ref keeps the order
   // legible without hoisting one of them into a less obvious place.
   const refreshLocksRef = useRef<((announce?: boolean) => Promise<void>) | null>(null);
+  /**
+   * The read currently in flight, and whether another was asked for while it ran.
+   *
+   * See refreshStatus: overlapping reads are the normal case here — window focus, the refresh
+   * button and the end of every write all trigger one — and against an unresponsive host they
+   * stop being harmless and start adding their deadlines together.
+   */
+  const inFlight = useRef<Promise<void> | null>(null);
+  const pendingRefresh = useRef(false);
+  const refreshStatusRef = useRef<((announce?: boolean) => Promise<void>) | null>(null);
 
   const changes = changeIndex(info?.status ?? null);
 
@@ -133,6 +143,42 @@ export function useRepository(onEvent?: OnEvent) {
    * on screen rather than to the repository's 1988 directories.
    */
   const refreshStatus = useCallback(async (announce = false) => {
+    if (!info) return;
+
+    // One read at a time, with at most one queued behind it.
+    //
+    // Observed against a host that went to sleep: three `lore status --scan` calls stacked
+    // up, each waiting its full deadline — about twenty seconds apiece — because nothing
+    // noticed the first had not come back. Window focus fires this, the refresh button fires
+    // this, and every write finishes by firing this, so overlapping is the normal case rather
+    // than a rare one; against an unresponsive host the waits are simply added together.
+    //
+    // A queued follow-up rather than plain skipping, because a refresh asked for *during* a
+    // read may be about a change the read had already passed. Dropping it would leave the
+    // screen a version behind with nothing to prompt another look.
+    if (inFlight.current) {
+      pendingRefresh.current = true;
+      return inFlight.current;
+    }
+
+    const run = readEverything(announce);
+    inFlight.current = run;
+    try {
+      await run;
+    } finally {
+      inFlight.current = null;
+      if (pendingRefresh.current) {
+        pendingRefresh.current = false;
+        // Never announce the follow-up: the user asked once.
+        void refreshStatusRef.current?.(false);
+      }
+    }
+  }, [info, onEvent, loaded]);
+
+  refreshStatusRef.current = refreshStatus;
+
+  /** The actual work, unguarded. Only ever called through refreshStatus. */
+  const readEverything = useCallback(async (announce: boolean) => {
     if (!info) return;
     const gen = generation.current;
     const path = info.path;
@@ -471,12 +517,27 @@ export function useRepository(onEvent?: OnEvent) {
    * Each returns the status the command already read, so the panel never shows a moment where
    * the buttons disagree with what just happened.
    */
+  /**
+   * A write that did not go out because the host was away.
+   *
+   * Remembered so the app can say *why* when the host comes back, at the moment the user can
+   * act on it. Observed: a push made 75 seconds after a service restart silently did not
+   * happen. Nothing was lost — the commit stayed local and the branch read "ahead" — but the
+   * only account of the failure was a line in a feed the user had already scrolled past.
+   *
+   * Deliberately not re-run automatically. Re-issuing a write nobody watched fail is a
+   * surprise with consequences, and the difference between "your work is waiting" and "your
+   * work has just gone out" is exactly the sort of thing a person needs to have chosen.
+   */
+  const [pendingWrite, setPendingWrite] = useState<string | null>(null);
+
   const runRemote = useCallback(
     async (fn: (path: string) => Promise<RepoStatus>, verb: string) => {
       if (!info) return;
       setStaging(true);
       try {
         const status = await fn(info.path);
+        setPendingWrite(null);
         setInfo((prev) => (prev ? { ...prev, status } : prev));
         if (status.pending_merge && status.conflicts.length > 0) {
           onEvent?.(
@@ -487,7 +548,14 @@ export function useRepository(onEvent?: OnEvent) {
           onEvent?.("success", `${verb} finished.`);
         }
       } catch (e) {
-        onEvent?.("error", explainError(String(e), signedInAsRef.current, repoIdentityRef.current).message);
+        // A write that failed because nothing answered is a different thing from one the host
+        // refused: the first is worth raising again when the host returns, the second is not.
+        if (looksUnreachable(String(e))) setPendingWrite(verb.replace(/[ —]+$/, ""));
+        onEvent?.("error", explainError(
+          explainUnreachable(String(e), reachRef.current),
+          signedInAsRef.current,
+          repoIdentityRef.current,
+        ).message);
       } finally {
         setStaging(false);
       }
@@ -587,6 +655,8 @@ export function useRepository(onEvent?: OnEvent) {
     stage,
     unstage,
     staging,
+    pendingWrite,
+    clearPendingWrite: () => setPendingWrite(null),
     takeLocks,
     dropLocks,
     locking,

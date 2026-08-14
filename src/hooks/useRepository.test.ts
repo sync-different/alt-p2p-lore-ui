@@ -13,6 +13,7 @@ const mockOpenRepo = vi.fn();
 const mockRepoStatus = vi.fn();
 const mockListDir = vi.fn();
 const mockListLocks = vi.fn();
+const mockPush = vi.fn();
 
 vi.mock("../lib/repo", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/repo")>();
@@ -22,6 +23,7 @@ vi.mock("../lib/repo", async (importOriginal) => {
     repoStatus: (...a: unknown[]) => mockRepoStatus(...a),
     listDir: (...a: unknown[]) => mockListDir(...a),
     listLocks: (...a: unknown[]) => mockListLocks(...a),
+    pushRepo: (...a: unknown[]) => mockPush(...a),
   };
 });
 
@@ -49,6 +51,7 @@ beforeEach(() => {
   mockRepoStatus.mockReset();
   mockListDir.mockReset();
   mockListLocks.mockReset();
+  mockPush.mockReset();
 });
 
 async function openWith(rootEntries: ReturnType<typeof entry>[], identity?: string) {
@@ -420,5 +423,132 @@ describe("attribution against a host with no identity provider", () => {
     });
 
     expect(mockListLocks).toHaveBeenLastCalledWith("/repo", "main", "u-99f5f8484b0a47fd", []);
+  });
+});
+
+describe("overlapping refreshes", () => {
+  /**
+   * Observed against a host that had gone to sleep:
+   *
+   *   $ lore status --scan  22.4s exit 0
+   *   $ lore status --scan  19.2s exit 0
+   *   $ lore status --scan  10.3s exit 0
+   *
+   * Three reads stacked, each waiting its own deadline, because nothing noticed the first
+   * had not returned. Window focus fires a refresh, the refresh button fires one, and every
+   * write ends with one — so overlap is the ordinary case, and against an unresponsive host
+   * the waits simply add up.
+   */
+  const deferred = () => {
+    let resolve!: (v: unknown) => void;
+    const promise = new Promise((r) => (resolve = r));
+    return { promise, resolve };
+  };
+
+  it("runs one read at a time instead of stacking them", async () => {
+    const { result } = await openWith([entry("a.txt")]);
+    mockRepoStatus.mockClear();
+    mockListDir.mockResolvedValue([entry("a.txt")]);
+    mockListLocks.mockResolvedValue([]);
+
+    const slow = deferred();
+    mockRepoStatus.mockReturnValue(slow.promise);
+
+    // Three arrive while the first is still outstanding — the reported case exactly.
+    await act(async () => {
+      void result.current.refreshStatus();
+      void result.current.refreshStatus();
+      void result.current.refreshStatus();
+      await Promise.resolve();
+    });
+
+    expect(mockRepoStatus).toHaveBeenCalledTimes(1);
+
+    // Releasing the first runs exactly one follow-up for everything asked meanwhile — not
+    // one per caller.
+    mockRepoStatus.mockResolvedValue(status());
+    await act(async () => {
+      slow.resolve(status());
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(mockRepoStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not announce the queued follow-up", async () => {
+    // The user asked once; hearing about it twice is noise, and the second is not a thing
+    // they did.
+    const events: string[] = [];
+    mockOpenRepo.mockResolvedValue({
+      path: "/repo",
+      status: status(),
+      branches: { names: ["main"], current: "main", remote_only: [] },
+      identity: null,
+    });
+    mockListDir.mockResolvedValue([entry("a.txt")]);
+    mockListLocks.mockResolvedValue([]);
+    const hook = renderHook(() => useRepository((_l, m) => void events.push(m)));
+    await act(async () => {
+      await hook.result.current.open("/repo");
+    });
+
+    const slow = deferred();
+    mockRepoStatus.mockReturnValue(slow.promise);
+    await act(async () => {
+      void hook.result.current.refreshStatus(true);
+      void hook.result.current.refreshStatus(true);
+      await Promise.resolve();
+    });
+    mockRepoStatus.mockResolvedValue(status());
+    await act(async () => {
+      slow.resolve(status());
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    // One lock announcement at most, from the read the user actually asked for.
+    expect(events.filter((m) => /locked/i.test(m)).length).toBeLessThanOrEqual(1);
+  });
+});
+
+describe("a write that failed because the host was away", () => {
+  it("is remembered, so it can be raised when the host comes back", async () => {
+    // Observed: a push made 75 seconds after a service restart silently did not happen.
+    // Nothing was lost — the commit stayed local, the branch read "ahead" — but the only
+    // account of the failure was one line in a feed, and the host returned minutes later.
+    const { result } = await openWith([entry("a.txt")]);
+    mockPush.mockRejectedValue(new Error("[Error] Disconnected from server"));
+
+    await act(async () => {
+      await result.current.push();
+    });
+
+    expect(result.current.pendingWrite).toBe("Push");
+  });
+
+  it("is not remembered when the host answered and refused", async () => {
+    // A rejected push is not waiting for anything; raising it later would be wrong.
+    const { result } = await openWith([entry("a.txt")]);
+    mockPush.mockRejectedValue(new Error("Not authorized to access repository"));
+
+    await act(async () => {
+      await result.current.push();
+    });
+
+    expect(result.current.pendingWrite).toBeNull();
+  });
+
+  it("is forgotten once a write succeeds", async () => {
+    const { result } = await openWith([entry("a.txt")]);
+    mockPush.mockRejectedValue(new Error("Disconnected from server"));
+    await act(async () => {
+      await result.current.push();
+    });
+    expect(result.current.pendingWrite).toBe("Push");
+
+    mockPush.mockResolvedValue(status());
+    await act(async () => {
+      await result.current.push();
+    });
+    expect(result.current.pendingWrite).toBeNull();
   });
 });

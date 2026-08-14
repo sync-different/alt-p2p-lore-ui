@@ -18,6 +18,9 @@ import { Dropdown } from "./components/Dropdown";
 import { useRepository } from "./hooks/useRepository";
 import { useNotices } from "./hooks/useNotices";
 import { useLoreTrace } from "./hooks/useLoreTrace";
+import { useHostHealth } from "./hooks/useHostHealth";
+import { cameBack, isServing, type HostProbe } from "./lib/hosts";
+import { decideReconnect, exhaustedMessage, reconnectMessage } from "./lib/reconnect";
 import { loadSettings, saveSettings, type Settings } from "./lib/settings";
 import { SessionForm } from "./components/SessionForm";
 import { useTunnels, phaseToStatus } from "./hooks/useTunnels";
@@ -119,9 +122,52 @@ export default function App() {
     [push],
   );
   const repo = useRepository(repoEvent);
+
+  /**
+   * Put a tunnel back up when it dies on its own.
+   *
+   * A P2P host is a process, unlike a direct host which is just an address, and it dies for
+   * reasons the user neither caused nor saw — a coordinator restart, a peer going away. Until
+   * now the host stayed down until somebody noticed and pressed Connect.
+   *
+   * Transport, not work: this restores the route rather than doing anything on the user's
+   * behalf, which is why it may happen automatically where a failed push may not. It is
+   * bounded — three widening attempts — because a tunnel that fails repeatedly is failing for
+   * a reason retrying cannot fix, and the coordinator is shared infrastructure.
+   */
+  const savedRef = useRef<SessionConfig[]>([]);
+  const attempts = useRef<Map<string, number>>(new Map());
+  const onTunnelExit = useCallback(
+    ({ sessionId, intentional }: { sessionId: string; intentional: boolean }) => {
+      const host = savedRef.current.find((h) => h.session_id === sessionId);
+      if (!host) return;
+      if (intentional) {
+        attempts.current.delete(host.id);
+        return;
+      }
+      const tried = attempts.current.get(host.id) ?? 0;
+      const decision = decideReconnect({
+        intentional,
+        attempts: tried,
+        isP2p: (host.kind ?? "p2p") !== "direct",
+      });
+      if (!decision.retry) {
+        // Say so rather than simply going quiet, which reads as the feature being broken.
+        if (decision.exhausted) push("warn", exhaustedMessage(host.name), host.name);
+        return;
+      }
+      attempts.current.set(host.id, tried + 1);
+      push("info", reconnectMessage(host.name, tried, decision.delayMs!), host.name);
+      setTimeout(() => {
+        void connectSession(host.id).catch((e) => push("error", String(e), host.name));
+      }, decision.delayMs);
+    },
+    [push],
+  );
+
   // The same stable callback as the repository hook. An inline arrow here re-created the
   // subscription on every render — see useTunnels.
-  const tunnels = useTunnels(onEvent);
+  const tunnels = useTunnels(onEvent, onTunnelExit);
 
   const refreshWorkspaces = useCallback(async () => {
     const list = await loadWorkspaces();
@@ -130,6 +176,15 @@ export default function App() {
     return list;
   }, []);
   useEffect(() => void refreshWorkspaces(), [refreshWorkspaces]);
+  savedRef.current = saved;
+  // A tunnel that reaches connected has recovered; the next drop starts counting again from
+  // the first, short delay rather than from wherever the last episode left off.
+  useEffect(() => {
+    for (const h of saved) {
+      if (tunnels.forSession(h.session_id)?.phase === "connected") attempts.current.delete(h.id);
+    }
+  }, [saved, tunnels]);
+
   useEffect(() => {
     void loadSessions().then((list) => {
       setSaved(list);
@@ -241,12 +296,61 @@ export default function App() {
    * configured — whether it answers is a question for the operation, and its failure is
    * translated rather than predicted.
    */
+  // Direct hosts have no process to speak for them, so they are probed. Before this they
+  // were assumed available, which meant a workspace on a switched-off host reported no
+  // problem at all until an operation failed.
+  const directTargets = saved
+    .filter((h) => (h.kind ?? "p2p") === "direct")
+    .map((h) => ({ id: h.id, baseUrl: hostBaseUrl(h) ?? "" }))
+    .filter((t) => t.baseUrl);
+  const { health: hostHealth } = useHostHealth(directTargets);
+
+  /**
+   * A host that comes back re-reads the repository it serves, once.
+   *
+   * Both of the day's failures ended the same way: the host returned and the app went on
+   * showing what it had learned before it left — a branch standing of "unknown", locks
+   * unreadable — until the user thought to press refresh. The probe already notices the
+   * return, so the only thing missing was acting on it.
+   *
+   * Reads only. A push that failed while the host was away is *not* re-run here: re-running a
+   * write nobody watched fail is a surprise with consequences, and the branch bar already
+   * shows it as work waiting to go out. See 3.11.5.
+   */
+  const lastHealth = useRef<Map<string, HostProbe>>(new Map());
+  useEffect(() => {
+    const previous = lastHealth.current;
+    for (const h of saved) {
+      const now = hostHealth.get(h.id);
+      if (!cameBack(previous.get(h.id), now)) continue;
+      push("success", `“${h.name}” is answering again.`, h.name);
+      // Only the open repository, and only if this host is the one serving it: re-reading
+      // for a host nothing on screen depends on is work the user cannot see the point of.
+      if (repo.info?.remote_url && hostServes(h, repo.info.remote_url)) {
+        void repo.refreshStatus();
+        // Say what did not go out, now that it could. The work was never lost — it stayed
+        // local and the branch reads "ahead" — but the only account of the failure was a line
+        // in a feed the user had probably scrolled past by the time the host returned.
+        if (repo.pendingWrite) {
+          push(
+            "warn",
+            `Your ${repo.pendingWrite.toLowerCase()} did not go out while “${h.name}” was away. ` +
+              `It is still here — press ${repo.pendingWrite} to send it.`,
+            h.name,
+          );
+          repo.clearPendingWrite();
+        }
+      }
+    }
+    lastHealth.current = new Map(hostHealth);
+  }, [hostHealth, saved, push, repo]);
+
   const servingHosts = saved.map((h) => ({
     name: h.name,
     baseUrl: hostBaseUrl(h),
     available:
       (h.kind ?? "p2p") === "direct"
-        ? true
+        ? isServing(hostHealth.get(h.id))
         : tunnels.forSession(h.session_id)?.phase === "connected",
     isP2p: (h.kind ?? "p2p") !== "direct",
   }));
@@ -436,6 +540,7 @@ export default function App() {
         onDisconnect={(h) => void disconnectHost(h)}
         onEdit={(h) => void hasPsk(h.id).then((k) => setEditing({ ...h, hasKey: k }))}
         onAdd={() => setAddingNew(true)}
+        health={hostHealth}
       >
         <AuthBadge
           status={auth.status}
