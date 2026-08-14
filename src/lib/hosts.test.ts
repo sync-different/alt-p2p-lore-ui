@@ -34,24 +34,24 @@ describe("probeStatus", () => {
 describe("probeLabel", () => {
   it("tells nothing-listening apart from nothing-answering", () => {
     // They send you to different places: start the service, or go and look at the machine.
-    const refused = probeLabel("refused", "fedora", "grpc://192.168.1.224:41337");
+    const refused = probeLabel("refused", "fedora", "grpc://192.168.1.20:41337");
     expect(refused).toMatch(/not running|nothing is listening/i);
 
-    const gone = probeLabel("unreachable", "fedora", "grpc://192.168.1.224:41337");
+    const gone = probeLabel("unreachable", "fedora", "grpc://192.168.1.20:41337");
     expect(gone).toMatch(/asleep|off|unreachable/i);
     expect(gone).not.toMatch(/not running/i);
   });
 
   it("names the host and the address in every state", () => {
     for (const p of ["up", "refused", "unreachable", "bad", undefined] as const) {
-      const s = probeLabel(p, "fedora", "grpc://192.168.1.224:41337");
+      const s = probeLabel(p, "fedora", "grpc://192.168.1.20:41337");
       expect(s).toContain("fedora");
-      expect(s).toContain("192.168.1.224:41337");
+      expect(s).toContain("192.168.1.20:41337");
     }
   });
 
   it("blames the settings, not the network, for an address it cannot parse", () => {
-    expect(probeLabel("bad", "typo", "grpc://192.168.1.224")).toMatch(/host settings/i);
+    expect(probeLabel("bad", "typo", "grpc://192.168.1.20")).toMatch(/host settings/i);
   });
 });
 

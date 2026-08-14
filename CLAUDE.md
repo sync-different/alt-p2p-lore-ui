@@ -291,9 +291,9 @@ Two behaviours to distrust until you have watched them:
 **Test hosts** (local test infrastructure; **no secrets in this repo** — session keys live in the
 OS keychain, and coordinator details are in the app's host settings):
 
-- a **direct** LAN host: Fedora 44 at `192.168.1.224`, open `loreserver` 0.8.6 on `41337`
-  (tcp *and* udp — QUIC shares the number), **no authentication**, repository `lantest`. Needs no
-  local ports at all, which makes it the easiest thing to point a fresh build at.
+- a **direct** LAN host: Fedora, open `loreserver` on `41337` (tcp *and* udp — QUIC shares the
+  number), **no authentication**. Needs no local ports at all, which makes it the easiest thing
+  to point a fresh build at. Its address is in the app's host settings, not here.
 - a **P2P** host reached through a coordinator, with an identity provider — that one exercises
   sign-in, and its identity port must match the host's exactly.
 

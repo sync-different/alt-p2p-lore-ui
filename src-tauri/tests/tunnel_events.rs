@@ -340,14 +340,14 @@ mod route {
 
     #[test]
     fn a_peer_on_this_network_is_named_as_local() {
-        let msg = describe_route(&TunnelMode::Direct, Some("192.168.1.250:41234"));
+        let msg = describe_route(&TunnelMode::Direct, Some("192.168.1.10:41234"));
         assert!(msg.contains("local network"), "{msg}");
-        assert!(msg.contains("192.168.1.250"), "the address is worth showing: {msg}");
+        assert!(msg.contains("192.168.1.10"), "the address is worth showing: {msg}");
     }
 
     #[test]
     fn a_public_peer_is_named_as_a_punch_through_nat() {
-        let msg = describe_route(&TunnelMode::Direct, Some("107.174.42.68:41234"));
+        let msg = describe_route(&TunnelMode::Direct, Some("203.0.113.7:41234"));
         assert!(msg.contains("hole punched"), "{msg}");
         assert!(!msg.contains("local network"), "{msg}");
     }
@@ -356,7 +356,7 @@ mod route {
     fn the_relay_is_never_described_as_direct() {
         // The relay path has no peer address — the socket is connected to the coordinator —
         // but even if one were supplied it must not be read as a direct link.
-        for peer in [None, Some("192.168.1.250:41234")] {
+        for peer in [None, Some("192.168.1.10:41234")] {
             let msg = describe_route(&TunnelMode::Relay, peer);
             assert!(msg.contains("relay"), "{msg}");
             assert!(!msg.contains("local network"), "{msg}");
@@ -373,11 +373,11 @@ mod route {
 
     #[test]
     fn every_private_range_counts_as_local() {
-        for host in ["10.0.0.5", "172.16.4.1", "172.31.255.254", "192.168.1.250", "127.0.0.1", "169.254.1.1"] {
+        for host in ["10.0.0.5", "172.16.4.1", "172.31.255.254", "192.168.1.10", "127.0.0.1", "169.254.1.1"] {
             assert!(is_local_network(host), "{host} should be local");
         }
         // 172.32 is outside the /12 — the classic off-by-one in this check.
-        for host in ["8.8.8.8", "107.174.42.68", "172.32.0.1", "11.0.0.1"] {
+        for host in ["8.8.8.8", "203.0.113.7", "172.32.0.1", "11.0.0.1"] {
             assert!(!is_local_network(host), "{host} should not be local");
         }
     }

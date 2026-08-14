@@ -104,7 +104,7 @@ mod tests {
 
     #[test]
     fn reads_the_authority_out_of_a_base_url() {
-        assert_eq!(authority_of("grpc://192.168.1.224:41337"), Some(("192.168.1.224".into(), 41337)));
+        assert_eq!(authority_of("grpc://192.168.1.20:41337"), Some(("192.168.1.20".into(), 41337)));
         assert_eq!(
             authority_of("grpc://127.0.0.1:41400/019f9e"),
             Some(("127.0.0.1".into(), 41400))
@@ -121,7 +121,7 @@ mod tests {
     #[test]
     fn refuses_what_it_cannot_understand_instead_of_guessing() {
         // No port means no probe: inventing 443 or 80 would report some *other* service up.
-        assert_eq!(authority_of("grpc://192.168.1.224"), None);
+        assert_eq!(authority_of("grpc://192.168.1.20"), None);
         assert_eq!(authority_of(""), None);
         assert_eq!(authority_of("grpc://"), None);
     }

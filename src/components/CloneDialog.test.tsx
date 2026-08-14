@@ -248,7 +248,7 @@ describe("identity when the host changes", () => {
   const openHost = {
     id: "h2",
     name: "fedora",
-    baseUrl: "grpc://192.168.1.224:41337",
+    baseUrl: "grpc://192.168.1.20:41337",
     authUrl: null,
   };
 
