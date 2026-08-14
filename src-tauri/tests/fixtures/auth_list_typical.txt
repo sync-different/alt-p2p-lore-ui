@@ -1,0 +1,9 @@
+Auth URL: https://127.0.0.1:9443
+  User: ale (u-87c4b8c8b7f44fc1)
+  Domains: https://lore-identity.example/, https://127.0.0.1:9443/, 127.0.0.1, https://127.0.0.1:9443/
+  Expires: Fri, 14 Aug 2026 05:11:52 +0000
+Auth URL: https://127.0.0.1:9443
+  Resource: 019f9e9f8f157e12a7ab77330299cfd4
+  User: ale (u-87c4b8c8b7f44fc1)
+  Domains: https://lore-identity.example/, https://127.0.0.1:9443/, 127.0.0.1, https://127.0.0.1:9443/019f9e9f8f157e12a7ab77330299cfd4
+  Expires: Thu, 13 Aug 2026 18:55:58 +0000

@@ -1,0 +1,47 @@
+[package]
+name = "alt-p2p-lore-ui"
+version = "0.1.0"
+license = "AGPL-3.0-or-later"
+description = "Manage Lore repositories over alt-p2p"
+authors = ["Alterante"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "alt_p2p_lore_ui_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+# The shell plugin is used from RUST only, never exposed to the webview: spawning is a
+# backend concern here, so the frontend holds process ids and nothing more.
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# A pseudo-terminal for `lore clone`. Its progress bar is drawn only for an interactive
+# terminal — no flag turns it on, and a pipe sees five lines and nothing for the 99 seconds
+# in between. Verified: piped, --log-level debug, and even `script` from a shell with no
+# controlling TTY all produce no bar, while a real terminal does.
+portable-pty = "0.8"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+tokio = { version = "1", features = ["time"] }
+# The PSK and identity token are bearer credentials: they belong in the OS keychain, not in
+# a settings file that syncs and ends up in dotfiles.
+keyring = { version = "3", features = ["apple-native"] }
+# Session configuration (names, addresses, ports) is not secret and lives in a plain file.
+dirs = "5"
+
+
+[dev-dependencies]
+tempfile = "3"

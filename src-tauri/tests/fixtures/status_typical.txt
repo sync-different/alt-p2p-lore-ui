@@ -1,0 +1,26 @@
+Repository 019f9e9f8f157e12a7ab77330299cfd4
+On branch main revision 21 -> 93ba6703971e4cfdd730bbb5bf3ffba07f9ac7ed0ac6893ab8559dc19989bd73
+Changes not staged for commit:
+M Daniel/2026-07-16-Git-vs-Lore-Comparison.docx
+M Daniel/2026-07-16-Git-vs-Lore-Comparison.pdf
+M Daniel/Test.txt
+M Daniel/links.txt
+M Feedback.txt
+M StackOBot/Binaries/Win64/StackOBotEditor.target
+M StackOBot/Binaries/Win64/UnrealEditor-StackOBot.dll
+M StackOBot/Binaries/Win64/UnrealEditor-StackOBot.pdb
+M StackOBot/Binaries/Win64/UnrealEditor.modules
+M StackOBot/Build/Android/project.properties
+M StackOBot/Build/Android/res/drawable-hdpi/icon.png
+M StackOBot/Build/Android/res/drawable-ldpi/icon.png
+M StackOBot/Build/Android/res/drawable-mdpi/icon.png
+M StackOBot/Build/Android/res/drawable-xhdpi/icon.png
+M StackOBot/Build/Android/res/drawable/downloadimageh.png
+M StackOBot/Build/Android/res/drawable/downloadimagev.png
+M StackOBot/Build/Android/res/drawable/icon.png
+M StackOBot/Build/Android/res/drawable/splashscreen_landscape.png
+M StackOBot/Build/Android/res/drawable/splashscreen_portrait.png
+M StackOBot/Build/Android/res/values/GooglePlayAppID.xml
+M StackOBot/Build/StackOBotTests.xml
+M StackOBot/Build/Windows/Application.ico
+... (2163 entries in the real repo)

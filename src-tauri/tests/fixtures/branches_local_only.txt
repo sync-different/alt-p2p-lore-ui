@@ -1,0 +1,3 @@
+Local branches:
+  main
+* altlore-ui-test

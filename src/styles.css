@@ -1,0 +1,67 @@
+@import "tailwindcss";
+
+/* Design tokens.
+ *
+ * A deliberately quiet, dark surface: this app sits alongside a DCC tool all day, and an
+ * artist's eye should go to their asset thumbnails and the diff, not to our chrome. Accent
+ * is reserved for state that means something — connected, changed, locked — so colour keeps
+ * its information value instead of becoming decoration.
+ */
+@theme {
+  --color-surface-0: #16181d;
+  --color-surface-1: #1c1f26;
+  --color-surface-2: #23272f;
+  --color-surface-3: #2c313a;
+  --color-line: #343a45;
+
+  --color-ink-0: #e8eaed;
+  --color-ink-1: #a8b0bd;
+  --color-ink-2: #6b7482;
+
+  --color-accent: #4d9eff;
+  --color-ok: #3fb950;
+  --color-warn: #d29922;
+  --color-danger: #f85149;
+
+  --font-ui: ui-sans-serif, -apple-system, "SF Pro Text", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--color-surface-0);
+  color: var(--color-ink-0);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  /* The chrome is not a document: dragging it around looks broken in a desktop app. */
+  user-select: none;
+  overflow: hidden;
+}
+
+/* Content the user may legitimately want to copy — paths, versions, diffs. */
+.selectable {
+  user-select: text;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-surface-3);
+  border-radius: 5px;
+  border: 2px solid var(--color-surface-1);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3d444f;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}

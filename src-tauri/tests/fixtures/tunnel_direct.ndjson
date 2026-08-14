@@ -1,0 +1,6 @@
+{"event":"status","state":"registering"}
+{"event":"status","state":"waiting_peer"}
+{"event":"status","state":"punching"}
+{"event":"status","state":"handshaking"}
+{"event":"status","state":"connected"}
+{"event":"tunnel_ready","url":"grpc://127.0.0.1:41500","port":41500,"mode":"direct"}

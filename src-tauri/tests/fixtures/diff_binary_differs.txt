@@ -1,0 +1,4 @@
+
+StackOBot/Build/Android/res/drawable/icon.png
+Binary files differ
+

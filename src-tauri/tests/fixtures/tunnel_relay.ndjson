@@ -1,0 +1,6 @@
+{"event":"status","state":"registering"}
+{"event":"status","state":"waiting_peer"}
+{"event":"status","state":"punching"}
+{"event":"status","state":"relay_tcp"}
+{"event":"status","state":"connected"}
+{"event":"tunnel_ready","url":"grpc://127.0.0.1:41501","port":41501,"mode":"relay"}

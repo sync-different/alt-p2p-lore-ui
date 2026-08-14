@@ -1,0 +1,3 @@
+{"event":"status","state":"registering"}
+{"event":"status","state":"error"}
+{"event":"error","message":"Authentication failed: 0x0002: Authentication failed"}

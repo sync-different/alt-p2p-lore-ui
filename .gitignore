@@ -1,0 +1,39 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Fetched build payload — assembled by scripts/fetch-deps.sh, never committed.
+# lore alone is 33 MB and the JRE ~39 MB; both are reproducible from the script.
+/src-tauri/binaries/*
+!/src-tauri/binaries/.gitkeep
+/src-tauri/resources/*
+!/src-tauri/resources/.gitkeep
+
+# Rust build output (8 GB and reproducible).
+/src-tauri/target
+/src-tauri/gen
+
+# Working notes: plans, specs, scratch. Design that outlives them belongs in
+# ARCHITECTURE.md, which is tracked.
+/internal
