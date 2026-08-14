@@ -1,18 +1,18 @@
 # alt-lore Desktop
 
-A desktop app for working with [EpicGames Lore](https://epicgames.github.io/lore/) repositories
-that live on someone else's machine, reached over a peer-to-peer tunnel — no server to rent, no
-ports to forward, no VPN.
+A desktop app for working with [EpicGames Lore](https://epicgames.github.io/lore/) repositories,
+wherever they live. A repository on your network is reached by address; one on someone else's
+machine is reached over a peer-to-peer tunnel — no server to rent, no ports to forward, no VPN.
 
 Built for artists and developers rather than operators. It is a front end for two programs it
 bundles: the **`lore`** CLI, and the **[alt-p2p-lore](https://github.com/sync-different/alt-p2p-lore)**
-tunnel that carries it. You install one app; there is nothing else to set up.
+tunnel it can use to carry it. You install one app; there is nothing else to set up.
 
 ## What it does
 
-- **Hosts** — connect to a machine running loreserver, through an
-  [alt-p2p](https://github.com/sync-different/alt-p2p) coordinator. Direct where the network
-  allows, relayed where it does not.
+- **Hosts** — reach a machine running loreserver either **peer-to-peer**, through an
+  [alt-p2p](https://github.com/sync-different/alt-p2p) coordinator with no ports to forward, or
+  **directly** at an address you can already reach. Past that choice everything works the same.
 - **Workspaces** — one tab per working copy, showing at a glance whether you can work in it: is
   a host serving it, and is the identity it acts as signed in.
 - **Sign-in** — paste the token your host issued you. Expiry is shown before it bites, and
@@ -31,15 +31,24 @@ Repository *writing* — commit, sync, push, branch switching, taking locks — 
 Download the `.dmg` (or build one below) and drag the app across. Nothing else is required:
 `lore`, the tunnel and a Java runtime are all inside the bundle.
 
-You will need three things from whoever runs the host:
+Under **+ Host** you choose how to reach it.
+
+**Peer-to-peer** — for a host on someone else's network. Three things from whoever runs it:
 
 | | Example |
 |---|---|
 | Coordinator address | `coord.example.com:9000` |
 | Session name and key | `lore-studio-main` + a shared secret |
-| Identity port, if the host requires signing in | `9443` — must match the host's exactly |
+| Identity port, if it requires signing in | `9443` — must match the host's exactly |
 
-Add those under **+ Host**, press **Connect**, then **+ Clone**.
+**Direct** — for a host you can already reach, including this machine:
+
+| | Example |
+|---|---|
+| Repository address | `grpc://lore.example:41337` |
+| Auth URL, if it requires signing in | `https://lore.example:9443` — blank if not |
+
+Then **Connect** (peer-to-peer only — a direct host has nothing to connect) and **+ Clone**.
 
 ## Build
 

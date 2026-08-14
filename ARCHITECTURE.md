@@ -9,11 +9,15 @@ The app owns almost nothing. It orchestrates two programs that already exist:
 
 - **`lore`** — the Lore CLI. Short-lived invocations, plain text output, no machine-readable
   mode. Every answer must be parsed from what a human was meant to read.
-- **`alt-p2p-lore connect`** — a long-lived tunnel process that forwards a remote host's
-  loreserver and identity service to loopback ports on this machine.
+- **`alt-p2p-lore connect`** — a long-lived tunnel process that makes a remote host's
+  loreserver and identity service appear at loopback addresses on this machine.
 
 Those two facts drive most of the design. One is a *question and answer*; the other is a
 *process that must outlive every screen*.
+
+The tunnel is **transport, not structure**. A host can equally be reached directly at an
+address — a machine on the network, or this one — and past that point nothing differs: the
+same cloning, the same sign-in, the same reasoning about which workspace belongs where.
 
 ```
 ┌── webview (React) ───────────────────────────────────────┐
@@ -42,7 +46,7 @@ Those two facts drive most of the design. One is a *question and answer*; the ot
 | State | Lives in | Reason |
 |---|---|---|
 | Running tunnels | Rust `registry` | A process must outlive the component that started it. The frontend holds ids; Rust holds handles. Every spawn is killed on exit, and `orphans.rs` reaps what a crash left behind. |
-| Hosts (connection details) | `sessions.json` | Plain, user-editable, no secrets. |
+| Hosts (how to reach them) | `sessions.json` | Plain, user-editable, no secrets. A host is a URL plus, for P2P, what is needed to build the tunnel that serves it. |
 | Session keys | OS keychain | A key in a settings file is a key in a backup. |
 | Workspaces | `workspaces.json` | A list of paths; everything else about a working copy is read from the working copy. |
 | What a repository *is* | The repository | Its host, its identity, its branch and its ids all live in `.lore/`. The app reads them; it never keeps a second copy to drift. |
@@ -57,21 +61,29 @@ already has one, and the two would disagree exactly when it mattered.
 These come from Lore and alt-p2p, not from this app, and they are the reason for several
 otherwise-odd choices. Each was verified against a live host.
 
-1. **A working copy reaches its host by loopback port** — not by "session". Any listener on that
-   port serves it, whichever part of the UI is on screen.
+1. **A working copy reaches its host by URL** — `remote_url` in its own config, not by
+   "session". Whichever host serves that URL serves it, whatever the UI is showing. For a
+   tunnelled host the URL is a loopback address; for a direct one it names the machine.
 2. **A working copy may pin the identity it acts as.** That, and not signing in and out, is what
    lets one person hold two clones of one repository as two different users.
 3. **Identities are stored per auth URL for the whole machine**, and signing in *adds* to them.
-   So sign-out is a machine-wide act, and "which user am I?" is only answerable per host.
-4. **One tunnel per host.** The identity port binds once, so two configured sessions to one host
-   can never both be connected.
+   So sign-out is a machine-wide act, and "which user am I?" is only answerable per host —
+   which is why identities are keyed by auth URL here too, exactly as `lore` keys them.
+4. **One tunnel per host.** The identity port binds once, so two configured P2P sessions to one
+   host can never both be connected. A direct host has no such limit — there is nothing to
+   bind.
 
 Consequently:
 
 - **Hosts and workspaces are separate concepts with separate UI.** A tab is a workspace — a
   working copy plus its identity — because nothing about repository work is per-connection.
-- **A workspace's host is derived, never stored.** It is whichever host serves the port the
-  repository dials. There is no link to keep in step.
+- **A workspace's host is derived, never stored.** It is whichever host serves the URL the
+  repository dials, compared on `host:port` — the two URLs are written by different programs
+  and differ in trailing slashes and paths, never in the authority. There is no link to keep
+  in step.
+- **A host is a URL, and transport is a property of it.** P2P derives its URL from the port
+  the tunnel forwards; a direct host is given one. Keying on the port alone made any two hosts
+  on that port the same host, which is true only while everything is a tunnel.
 - **Anything spanning hosts must name its host.** With two connected, "signed in as…" is
   ambiguous unless it says whose store it means.
 
@@ -87,7 +99,7 @@ kept separate from invocation for exactly this reason: the interesting failures 
 and they can then be tested without a host, a tunnel or a repository.
 
 **Errors are translated, not relayed.** The CLI reports causes several layers from the fix — an
-expired token as a storage error, a missing grant as "Not found", an unserved port as
+expired token as a storage error, a missing grant as "Not found", an unserved address as
 "Disconnected from server". Each translation is narrow and conditional: it only fires when the
 app independently knows the precondition holds, because a confident wrong explanation sends
 someone to change the one thing that was already right. The original text is always kept.

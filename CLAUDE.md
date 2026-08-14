@@ -10,7 +10,8 @@ repositories over a peer-to-peer tunnel. It wraps two programs it does not own:
 - **`lore`** — the Lore CLI, bundled as a sidecar. Has no machine-readable output, so every
   interaction is text parsed against golden fixtures captured from the real thing.
 - **`alt-p2p-lore`** — the P2P tunnel (a shaded [alt-p2p](https://github.com/sync-different/alt-p2p)
-  jar), which forwards a remote loreserver and identity provider to loopback ports.
+  jar), which makes a remote loreserver and identity provider appear at loopback addresses.
+  It is one way to reach a host; a host can equally be a plain address on the network.
 
 The audience is artists and developers, not operators. That shapes everything below: an error
 must name the thing to change, and a green light must be one the app can justify.
@@ -46,25 +47,31 @@ src-tauri/src/
   orphans.rs            reaping tunnels a previous run left behind
 ```
 
-**Hosts are connections; workspaces are the work.** A tab is a *workspace* — a working copy plus
-the identity it acts as — never a P2P session. [ARCHITECTURE.md](ARCHITECTURE.md) explains why.
+**Hosts are addresses; workspaces are the work.** A tab is a *workspace* — a working copy plus
+the identity it acts as — never a P2P session. A host is identified by the URL its working
+copies dial: derived from the forwarded port for P2P (`grpc://127.0.0.1:<port>`), given outright
+for a direct host. Never key anything on the port alone — that made any two hosts on one port
+the same host. [ARCHITECTURE.md](ARCHITECTURE.md) explains why.
 
 ## The Lore model — the four facts that bite hardest
 
 All verified by hand against a live host. Getting any of them wrong produces a UI that looks
 right with one host, one identity and one clone:
 
-- **A working copy pins its host as a loopback PORT** (`remote_url` in `.lore/config.toml`), not
-  a session. Any listener on that port serves it — a repo in a *disconnected* tab works through
-  another tab's tunnel.
+- **A working copy pins its host as a URL** (`remote_url` in `.lore/config.toml`), not a
+  session. Whichever host serves that URL serves it — a repo in a *disconnected* tab works
+  through another tab's tunnel. Matching is on the **authority** (`host:port`), because the two
+  URLs compared are written by different programs and differ in paths and trailing slashes.
 - **A working copy may pin an identity** (`identity = "u-…"`, honoured with no flag). `--identity`
   takes the **user id**, never the username. This is the *only* mechanism that makes two clones
   act as two people.
 - **Identities are stored per auth URL, for the whole machine**, and `[[remotes.token]]` is an
   array — signing in **adds**. So "sign out to switch user" is wrong, and signing out affects
   every workspace.
-- **One tunnel per host**: the identity port binds once. Two sessions to one host can both be
-  configured and only one can connect.
+- **One tunnel per host**: the identity port binds once. Two P2P sessions to one host can both
+  be configured and only one can connect. A **direct** host has no tunnel at all, so no such
+  limit — and `kind` defaults to `p2p`, so configurations written before direct hosts existed
+  load unchanged.
 
 `.lore/id` and `.lore/instance` are 16 raw bytes each — the repository and this working copy.
 Both readable without running `lore`, and the only identifiers that survive renaming a folder.
