@@ -65,3 +65,17 @@ body {
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* A quicker pulse than Tailwind's 2s default, for the connecting dot.
+ *
+ * Two seconds reads as a slow breath — closer to "idle" than "working" — and a connection
+ * usually resolves in a few seconds, so the animation was slower than the event it described.
+ * 0.8s is busy without being a flicker.
+ */
+@keyframes pulse-fast {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+.animate-pulse-fast {
+  animation: pulse-fast 0.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}

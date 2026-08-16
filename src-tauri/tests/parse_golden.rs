@@ -60,7 +60,9 @@ fn status_reads_change_entries() {
 #[test]
 fn status_keeps_paths_containing_spaces() {
     // Real asset trees are full of these; splitting on every space loses them.
-    let s = parse_status("M Content/Character Art/Hero Mesh.uasset");
+    // The header is part of the input because real output always has one, and a change line
+    // is only a change line inside a section — see `prose_outside_a_section_is_never_a_change`.
+    let s = parse_status("Changes not staged for commit:\nM Content/Character Art/Hero Mesh.uasset");
     assert_eq!(s.changes.len(), 1);
     assert_eq!(s.changes[0].path, "Content/Character Art/Hero Mesh.uasset");
 }
@@ -69,7 +71,7 @@ fn status_keeps_paths_containing_spaces() {
 fn status_carries_unknown_codes_through() {
     // Better to show a code we do not understand than to drop the file and imply it is
     // unchanged.
-    let s = parse_status("R old/path.txt");
+    let s = parse_status("Changes not staged for commit:\nR old/path.txt");
     assert_eq!(s.changes.len(), 1);
     assert_eq!(s.changes[0].kind, ChangeKind::Other("R".into()));
 }
@@ -80,6 +82,7 @@ fn status_survives_unrecognised_lines() {
     let input = "Repository abc\n\
                  On branch main revision 3 -> deadbeef\n\
                  Some new advisory sentence lore decided to print.\n\
+                 Changes not staged for commit:\n\
                  M kept.txt\n";
     let s = parse_status(input);
     assert_eq!(s.revision, Some(3));
@@ -540,4 +543,62 @@ fn every_standing_the_parser_can_produce_has_a_captured_example() {
     ] {
         assert!(seen.contains(&expected), "no fixture produces {expected:?}");
     }
+}
+
+#[test]
+fn a_branch_that_has_never_been_pushed_is_not_unknown() {
+    // Reported from testing: created a branch in the UI, committed, and Push was greyed out.
+    //
+    // lore prints "Remote branch does not exist" instead of a "Local branch …" sentence, so the
+    // parser matched nothing and left the standing Unknown — which the UI refuses to push from,
+    // on the reasonable general rule that it must not push on no information. But this is not
+    // no information: the branch is known to exist only here, and pushing is exactly what
+    // resolves that. The app blocked the one action that would help.
+    use alt_p2p_lore_ui_lib::lore::parse::BranchStanding;
+    assert_eq!(standing_of("status_new_branch.txt"), BranchStanding::NoRemote);
+}
+
+#[test]
+fn a_repository_with_no_changes_lists_none() {
+    // Reported from testing: a file named "tracked changes" appeared under "not staged".
+    //
+    // `lore` prints the *message* "No tracked changes" when there is nothing to report, and the
+    // parser accepted it as an entry — "No" passed a guard that allowed a two-character change
+    // code, leaving path "tracked changes". A phantom modified file in a clean repository, which
+    // is worse than a missing one: it invites staging and committing something that is not there.
+    let text = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/status_new_branch.txt"),
+    )
+    .unwrap();
+    let status = alt_p2p_lore_ui_lib::lore::parse::parse_status(&text);
+    assert!(status.changes.is_empty(), "got phantom changes: {:?}", status.changes);
+    assert!(status.conflicts.is_empty());
+}
+
+#[test]
+fn prose_outside_a_section_is_never_a_change() {
+    // The general rule the fix rests on: a change line is only a change line inside a section.
+    // Two guards, because they catch different prose — the length rejects "No tracked changes",
+    // the section rejects a sentence that happens to start with a single letter.
+    let text = "Repository abc\n\
+                On branch main revision 1 -> deadbeef\n\
+                Remote branch does not exist\n\
+                No tracked changes\n\
+                A sentence that starts with one letter\n";
+    let status = alt_p2p_lore_ui_lib::lore::parse::parse_status(text);
+    assert!(status.changes.is_empty(), "got: {:?}", status.changes);
+}
+
+#[test]
+fn a_real_change_list_still_parses() {
+    // The guard must not cost us the thing it protects: entries inside a section, with paths
+    // containing spaces, still arrive.
+    let text = "Repository abc\n\
+                On branch main revision 1 -> deadbeef\n\
+                Changes not staged for commit:\n\
+                M Art/Character Rig v2.uasset\n\
+                A docs/notes.txt\n";
+    let status = alt_p2p_lore_ui_lib::lore::parse::parse_status(text);
+    let paths: Vec<&str> = status.changes.iter().map(|c| c.path.as_str()).collect();
+    assert_eq!(paths, vec!["Art/Character Rig v2.uasset", "docs/notes.txt"]);
 }

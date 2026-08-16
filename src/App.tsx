@@ -561,7 +561,7 @@ export default function App() {
           onClick={() => setShowSettings(true)}
           aria-label="Settings"
           title="Settings"
-          className="rounded px-1 text-[15px] leading-none text-ink-2 hover:bg-surface-3 hover:text-ink-0"
+          className="rounded px-1.5 text-[20px] leading-none text-ink-2 hover:bg-surface-3 hover:text-ink-0"
         >
           ⚙
         </button>

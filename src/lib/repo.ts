@@ -28,7 +28,13 @@ export interface ChangeEntry {
 }
 
 /** Where the local branch stands against the remote, in lore's own words. */
-export type BranchStanding = "unknown" | "in_sync" | "ahead" | "behind" | "diverged";
+export type BranchStanding =
+  | "unknown"
+  | "no_remote"
+  | "in_sync"
+  | "ahead"
+  | "behind"
+  | "diverged";
 
 export interface RepoStatus {
   repo_id: string | null;

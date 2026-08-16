@@ -20,7 +20,7 @@ import { probeLabel, probeStatus, type HostProbe } from "../lib/hosts";
 const DOT: Record<SessionStatus, string> = {
   connected: "bg-ok",
   relay: "bg-warn",
-  connecting: "bg-warn animate-pulse",
+  connecting: "bg-warn animate-pulse-fast",
   error: "bg-danger",
   disconnected: "bg-ink-2/50",
 };

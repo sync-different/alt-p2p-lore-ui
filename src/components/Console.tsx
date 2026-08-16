@@ -147,6 +147,17 @@ export function Console({
         )}
 
         <span className="ml-auto flex items-center gap-1">
+          {/* Which build you are actually running.
+              Version alone does not answer that — it changes when someone decides it should,
+              while the question during testing is always "is this the binary I was just given?"
+              Sat by Clear because that is the corner already reserved for things about the
+              console rather than about the repository. */}
+          <span
+            className="px-1 text-ink-2 tabular-nums"
+            title={`alt-lore Desktop ${__APP_VERSION__} · build ${__APP_BUILD__}`}
+          >
+            v{__APP_VERSION__} · b{__APP_BUILD__}
+          </span>
           <button
             onClick={onClear}
             title="Clear the console"

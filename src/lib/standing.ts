@@ -44,6 +44,16 @@ export function adviseBranch(status: RepoStatus | null | undefined): BranchAdvic
 
   const standing: BranchStanding = status.standing ?? "unknown";
   switch (standing) {
+    case "no_remote":
+      // Known, not unknown — and Push is the action that resolves it. Saying "only on this
+      // machine" matters: until it is pushed, nobody else can see the branch and nothing is
+      // backed up anywhere.
+      return {
+        summary: "This branch is only on this machine. Push to create it on the host.",
+        canPush: true,
+        canSync: false,
+        tone: "info",
+      };
     case "in_sync":
       return { summary: "Up to date with the host.", canPush: false, canSync: true, tone: "ok" };
     case "ahead":

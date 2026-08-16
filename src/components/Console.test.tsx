@@ -121,3 +121,19 @@ describe("Console", () => {
     expect(onOpenSettings).toHaveBeenCalled();
   });
 });
+
+describe("which build you are running", () => {
+  it("shows the version and build number", () => {
+    // The question this answers is not "what version is this" but "is the thing I am running
+    // the thing you just gave me?" — which came up on every hand-off during testing, and was
+    // only answerable by comparing binary timestamps.
+    view({});
+    expect(screen.getByText(/v0\.0\.0-test/)).toBeTruthy();
+    expect(screen.getByText(/b0/)).toBeTruthy();
+  });
+
+  it("spells it out in full on hover", () => {
+    view({});
+    expect(screen.getByTitle(/alt-lore Desktop 0\.0\.0-test · build 0/)).toBeTruthy();
+  });
+});

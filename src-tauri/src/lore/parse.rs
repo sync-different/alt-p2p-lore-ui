@@ -61,6 +61,13 @@ pub enum BranchStanding {
     /// Nothing said, or nothing known — never assume it is safe to push.
     #[default]
     Unknown,
+    /// The branch exists only here: `lore` says "Remote branch does not exist".
+    ///
+    /// Distinct from `Unknown`, and the distinction matters. Unknown means the app could not
+    /// find out, so pushing might do anything; this means it *did* find out, and pushing is
+    /// precisely what resolves it. Collapsing the two greyed out Push on every newly created
+    /// branch — the one moment it is most obviously the right action.
+    NoRemote,
     InSync,
     /// Local has commits the remote does not. A plain push works.
     Ahead,
@@ -120,6 +127,11 @@ pub fn parse_status(out: &str) -> RepoStatus {
     // Entries before any header belong to no section; nothing is staged until one says so.
     let mut staged_section = false;
     let mut conflict_section = false;
+    // Whether a change header has been seen. A change line is only a change line *inside* a
+    // section — outside one, `lore`'s prose looks identical to an entry. "No tracked changes"
+    // parsed as a file named "tracked changes" with change code "No", and appeared in the UI
+    // as a phantom modified file, because "No" is two characters and the guard allowed two.
+    let mut in_section = false;
 
     for line in out.lines() {
         let line = line.trim_end();
@@ -144,6 +156,12 @@ pub fn parse_status(out: &str) -> RepoStatus {
                 } else {
                     BranchStanding::Unknown
                 };
+                continue;
+            }
+            // Printed *instead of* a "Local branch …" sentence, so it needs its own arm
+            // rather than another `contains` inside that one.
+            if lower.starts_with("remote branch does not exist") {
+                status.standing = BranchStanding::NoRemote;
                 continue;
             }
             if lower.starts_with("pending merge") {
@@ -182,13 +200,16 @@ pub fn parse_status(out: &str) -> RepoStatus {
             if lower.starts_with("changes in conflict") {
                 staged_section = false;
                 conflict_section = true;
+                in_section = true;
                 continue;
             }
             conflict_section = false;
             if lower.contains("not staged") || lower.starts_with("untracked") {
                 staged_section = false;
+                in_section = true;
             } else if lower.contains("staged for commit") {
                 staged_section = true;
+                in_section = true;
             }
             continue;
         }
@@ -197,9 +218,11 @@ pub fn parse_status(out: &str) -> RepoStatus {
         if let Some((code, path)) = line.split_once(' ') {
             let code = code.trim();
             let path = path.trim();
-            // A single-character code followed by a path. Anything else is prose we do not
-            // recognise and deliberately ignore.
-            if !code.is_empty() && code.len() <= 2 && !path.is_empty()
+            // A *single*-character code, and only inside a section. Two guards, because they
+            // catch different prose: the length rejects "No tracked changes" (a message, whose
+            // "No" passed the old two-character allowance and left a phantom file called
+            // "tracked changes"), and the section rejects prose that begins with one letter.
+            if in_section && code.len() == 1 && !path.is_empty()
                 && !is_directory_entry(path)
             {
                 if conflict_section {

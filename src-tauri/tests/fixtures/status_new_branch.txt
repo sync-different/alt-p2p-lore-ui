@@ -1,0 +1,4 @@
+Repository 01a000fbab1b7ac1a1e195112bfa219b
+On branch fedora1 revision 4 -> 24370ef2bf47ba3d5acfe37f72836325378b379f3f2e9087863bfcc2f9d18e84
+Remote branch does not exist
+No tracked changes
