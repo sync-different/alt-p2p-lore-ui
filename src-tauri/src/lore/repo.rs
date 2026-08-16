@@ -428,8 +428,23 @@ pub async fn push(app: AppHandle, path: String) -> Result<RepoStatus, String> {
 /// refuses: "Unable to commit when <path> is still in conflict". Only this clears the flag,
 /// which is why the app offers it rather than leaving someone to discover the command.
 ///
-/// `mine` keeps the local version, `theirs` takes the incoming one. Both discard the other
-/// side for that file, which is why the UI names the files and the choice.
+/// `take_mine` means **the user keeps their own local work** — see `resolve_side_arg` for the
+/// word it maps to, which is not the obvious one. Both choices discard the other side for that
+/// file, which is why the UI names the files and the choice.
+/// Which side `lore branch merge resolve` must be given to honour the user's choice.
+///
+/// **lore's words are inverted from the user's point of view.** During the sync that created
+/// the conflict, lore has already moved the working copy onto the *incoming* revision — so in
+/// its merge, "mine" is the **host's** side and "theirs" is the **user's local** side. Proven
+/// by a controlled two-clone experiment against a scratch loreserver (2026-08-16): with local
+/// edit B and remote edit A in conflict, `resolve mine` left **A** (the host's line) and
+/// `resolve theirs` left **B** (the user's). The first shipped version passed `mine` for
+/// "keep my version", which silently **discarded the user's work while claiming to keep it** —
+/// the exact inversion this function exists to pin.
+fn resolve_side_arg(keep_user_version: bool) -> &'static str {
+    if keep_user_version { "theirs" } else { "mine" }
+}
+
 #[tauri::command]
 pub async fn resolve_conflicts(
     app: AppHandle,
@@ -445,7 +460,7 @@ pub async fn resolve_conflicts(
         "branch".into(),
         "merge".into(),
         "resolve".into(),
-        if take_mine { "mine".into() } else { "theirs".into() },
+        resolve_side_arg(take_mine).into(),
     ];
     let args = cmd::with_positional(flags, paths);
     // Taking one side of a conflict rewrites the file's content from the store, so a large
@@ -918,5 +933,20 @@ mod repository_list_tests {
         let repos = parse_repository_list("demo (old) (019f9e)\n");
         assert_eq!(repos[0].name, "demo (old)");
         assert_eq!(repos[0].id, "019f9e");
+    }
+}
+
+#[cfg(test)]
+mod resolve_side_tests {
+    use super::resolve_side_arg;
+
+    #[test]
+    fn keeping_the_users_version_sends_theirs_because_lores_words_are_inverted() {
+        // Pinned by a live two-clone experiment (2026-08-16): after a sync-merge, lore's
+        // "mine" is the HOST's side, not the user's. The first shipped mapping sent "mine"
+        // for "Keep my version" and silently discarded the user's work — this test fails
+        // against that code, which is the point of its existence.
+        assert_eq!(resolve_side_arg(true), "theirs", "keep the user's local work");
+        assert_eq!(resolve_side_arg(false), "mine", "take the host's incoming side");
     }
 }

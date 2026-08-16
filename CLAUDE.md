@@ -185,6 +185,17 @@ what the operation's name implies:
   `info` exists rather than after an effect has run. Same lesson as the owner string one row up,
   and it caught me anyway: a display string and an identifier must never share a channel.
 
+### Merge resolution: lore's "mine" is the host's side
+
+`lore branch merge resolve mine|theirs` uses the **merge machinery's** point of view, not the
+user's: during the sync that created the conflict, lore has already moved the working copy onto
+the *incoming* revision, so **`mine` keeps the HOST's version and `theirs` keeps the user's local
+work** — the exact opposite of what the words say to a person at the keyboard. Proven by a
+controlled two-clone experiment against a scratch loreserver (2026-08-16, both directions).
+The first shipped mapping passed `mine` for "Keep my version", which silently discarded the
+user's work while announcing it was kept. `resolve_side_arg` in `repo.rs` pins the corrected
+mapping with a test; do not "simplify" it back to the obvious words.
+
 ### The console, and why traces are always recorded
 
 The bottom panel merges two streams: the app's own notices, and one line per `lore` process
