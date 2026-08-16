@@ -48,10 +48,32 @@ export interface TunnelLine {
   line: string;
 }
 
+/**
+ * One line of a `lore` command's own output, streamed live on `lore://output`.
+ *
+ * The trace is one line *per command* — what ran and how it ended. This is the command's own
+ * narration *while* it runs: `Fragmenting files…`, `Synchronizing to revision…`, a warning. For
+ * the long flows (clone, commit, sync) that is the difference between a console that explains a
+ * minute-long operation and one that goes quiet until it is over.
+ */
+export interface LoreOutputLine {
+  /** The redacted command these lines belong to, so they can be attributed. */
+  command: string;
+  stream: "out" | "err";
+  /** Already scrubbed in Rust. */
+  line: string;
+}
+
+export interface OutputLine extends LoreOutputLine {
+  id: string;
+  at: number;
+}
+
 export type ConsoleLine =
   | { kind: "notice"; id: string; at: number; notice: Notice }
   | { kind: "trace"; id: string; at: number; trace: TraceLine }
-  | { kind: "tunnel"; id: string; at: number; tunnel: TunnelLine };
+  | { kind: "tunnel"; id: string; at: number; tunnel: TunnelLine }
+  | { kind: "output"; id: string; at: number; output: OutputLine };
 
 /** Which stream a line belongs to, for the filter tabs. */
 export type ConsoleFilter = "all" | "problems" | "debug";
@@ -99,6 +121,7 @@ export function mergeFeed(
   debugEnabled: boolean,
   cap = 500,
   tunnel: TunnelLine[] = [],
+  output: OutputLine[] = [],
 ): ConsoleLine[] {
   const lines: ConsoleLine[] = [];
 
@@ -120,14 +143,25 @@ export function mergeFeed(
       for (const t of tunnel) {
         if (t.level === "error") lines.push({ kind: "tunnel", id: t.id, at: t.at, tunnel: t });
       }
+      // A line lore sent to stderr is the command telling you something went wrong as it ran —
+      // exactly what a problems filter is for. Its stdout narration is not.
+      for (const o of output) {
+        if (o.stream === "err") lines.push({ kind: "output", id: o.id, at: o.at, output: o });
+      }
     } else {
       for (const t of traces) lines.push({ kind: "trace", id: t.id, at: t.at, trace: t });
       for (const t of tunnel) lines.push({ kind: "tunnel", id: t.id, at: t.at, tunnel: t });
+      for (const o of output) lines.push({ kind: "output", id: o.id, at: o.at, output: o });
     }
   }
 
   lines.sort((a, b) => b.at - a.at);
   return lines.slice(0, cap);
+}
+
+/** Colour for a streamed output line: stderr reads as attention, stdout stays quiet. */
+export function outputColour(o: LoreOutputLine): string {
+  return o.stream === "err" ? "text-warn" : "text-ink-2";
 }
 
 /** Colour for a tunnel line: quiet unless its own logger said otherwise. */

@@ -129,7 +129,7 @@ describe("which build you are running", () => {
     // only answerable by comparing binary timestamps.
     view({});
     expect(screen.getByText(/v0\.0\.0-test/)).toBeTruthy();
-    expect(screen.getByText(/b0/)).toBeTruthy();
+    expect(screen.getByText(/build 0/)).toBeTruthy();
   });
 
   it("spells it out in full on hover", () => {

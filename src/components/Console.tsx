@@ -5,10 +5,12 @@ import {
   LEVEL_TAG,
   formatMs,
   mergeFeed,
+  outputColour,
   problemCount,
   traceColour,
   tunnelColour,
   type ConsoleFilter,
+  type OutputLine,
   type TraceLine,
   type TunnelLine,
 } from "../lib/console";
@@ -42,6 +44,7 @@ export function Console({
   notices,
   traces,
   tunnel = [],
+  output = [],
   debugEnabled,
   onClear,
   onOpenSettings,
@@ -50,6 +53,8 @@ export function Console({
   traces: TraceLine[];
   /** Raw output from tunnel processes. */
   tunnel?: TunnelLine[];
+  /** Live per-line output from lore commands (clone/commit/sync/push narration). */
+  output?: OutputLine[];
   debugEnabled: boolean;
   onClear: () => void;
   onOpenSettings: () => void;
@@ -65,8 +70,8 @@ export function Console({
   }, [debugEnabled, filter]);
 
   const lines = useMemo(
-    () => mergeFeed(notices, traces, filter, debugEnabled, 500, tunnel),
-    [notices, traces, filter, debugEnabled, tunnel],
+    () => mergeFeed(notices, traces, filter, debugEnabled, 500, tunnel, output),
+    [notices, traces, filter, debugEnabled, tunnel, output],
   );
   const problems = problemCount(notices, traces, debugEnabled, tunnel);
 
@@ -111,7 +116,11 @@ export function Console({
 
   return (
     <div
-      className="flex shrink-0 flex-col border-t border-line bg-surface-1"
+      // `relative z-40` lifts the console above the modal backdrop (z-30), so it stays live and
+      // scrollable while a dialog is open — a long clone or sync is exactly when you want to
+      // read it. Modal dialog boxes are centred and short enough to clear it; the one tall one
+      // (CloneDialog) caps its height so it never reaches down into this strip.
+      className="relative z-40 flex shrink-0 flex-col border-t border-line bg-surface-1"
       style={{ height: collapsed ? undefined : height }}
     >
       {/* The drag handle doubles as the top border; hidden when collapsed, where there is
@@ -156,7 +165,7 @@ export function Console({
             className="px-1 text-ink-2 tabular-nums"
             title={`alt-lore Desktop ${__APP_VERSION__} · build ${__APP_BUILD__}`}
           >
-            v{__APP_VERSION__} · b{__APP_BUILD__}
+            v{__APP_VERSION__} · build {__APP_BUILD__}
           </span>
           <button
             onClick={onClear}
@@ -215,6 +224,19 @@ export function Console({
                       <span className={l.tunnel.level === "info" ? "text-ink-1" : tunnelColour(l.tunnel)}>
                         {l.tunnel.line}
                       </span>
+                    </span>
+                  </li>
+                ) : l.kind === "output" ? (
+                  <li key={l.id} className="flex gap-2 whitespace-pre-wrap break-words">
+                    <span className="shrink-0 text-ink-2">{timeOf(l.at)}</span>
+                    {/* The command's own narration as it runs. The stream, not a severity:
+                        lore prints ordinary progress to stdout and warnings to stderr, so an
+                        stderr line reads as attention but not as a failure. */}
+                    <span className={`shrink-0 ${outputColour(l.output)}`}>
+                      {l.output.stream === "err" ? "LOG!" : "LOG "}
+                    </span>
+                    <span className={`selectable min-w-0 ${l.output.stream === "err" ? "text-warn" : "text-ink-1"}`}>
+                      {l.output.line}
                     </span>
                   </li>
                 ) : (

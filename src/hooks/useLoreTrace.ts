@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import type { LoreTrace, TraceLine, TunnelLine } from "../lib/console";
+import type { LoreOutputLine, LoreTrace, OutputLine, TraceLine, TunnelLine } from "../lib/console";
 
 /**
  * Every `lore` process the backend spawns, as it happens.
@@ -22,6 +22,8 @@ export function useLoreTrace() {
   const [traces, setTraces] = useState<TraceLine[]>([]);
   /** Raw lines from tunnel processes — the jar's own account of a connection. */
   const [tunnel, setTunnel] = useState<TunnelLine[]>([]);
+  /** Live output lines from lore commands — the phase narration of clone/commit/sync/push. */
+  const [output, setOutput] = useState<OutputLine[]>([]);
   // Ids must be unique without depending on the clock: several commands can complete in the
   // same millisecond, and React keys that collide render the wrong rows.
   const seq = useRef(0);
@@ -67,12 +69,34 @@ export function useLoreTrace() {
     };
   }, []);
 
+  // lore's own per-line output while a command runs — the same free-of-dependencies
+  // subscription as above, for the same reason (a re-run must not drop lines in the gap).
+  useEffect(() => {
+    let stop: (() => void) | undefined;
+    let cancelled = false;
+
+    void listen<LoreOutputLine>("lore://output", (event) => {
+      const line: OutputLine = { ...event.payload, id: `l${++seq.current}`, at: Date.now() };
+      setOutput((prev) => [line, ...prev].slice(0, MAX_TRACES));
+    }).then((un) => {
+      if (cancelled) un();
+      else stop = un;
+    });
+
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
+  }, []);
+
   return {
     traces,
     tunnel,
+    output,
     clear: () => {
       setTraces([]);
       setTunnel([]);
+      setOutput([]);
     },
   };
 }

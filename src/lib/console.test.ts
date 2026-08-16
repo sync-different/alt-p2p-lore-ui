@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   formatMs,
   mergeFeed,
+  outputColour,
   problemCount,
   traceColour,
   tunnelColour,
+  type OutputLine,
   type TraceLine,
   type TunnelLine,
 } from "./console";
@@ -58,6 +60,40 @@ describe("tunnel output", () => {
       tun("o2", 2, "error", "ERROR Session full"),
     ]);
     expect(feed.map((l) => l.id)).toEqual(["o2"]);
+  });
+});
+
+const out = (id: string, at: number, stream: OutputLine["stream"] = "out", line = "Synchronizing to revision"): OutputLine => ({
+  id,
+  at,
+  command: "sync",
+  stream,
+  line,
+});
+
+describe("lore command output", () => {
+  const notices = [notice("n1", "error", 100)];
+
+  it("is hidden until debug is on, like the trace and tunnel streams", () => {
+    expect(mergeFeed(notices, [], "all", false, 500, [], [out("l1", 200)]).map((l) => l.id)).toEqual(["n1"]);
+  });
+
+  it("appears interleaved once debug is on — the point of the feature", () => {
+    const feed = mergeFeed(notices, [], "all", true, 500, [], [out("l1", 200)]);
+    expect(feed.map((l) => l.id)).toEqual(["l1", "n1"]);
+  });
+
+  it("shows only its stderr lines under Problems, never ordinary stdout narration", () => {
+    const feed = mergeFeed([], [], "problems", true, 500, [], [
+      out("l1", 1, "out", "Fragmenting files and updating tree hashes"),
+      out("l2", 2, "err", "warning: host is slow"),
+    ]);
+    expect(feed.map((l) => l.id)).toEqual(["l2"]);
+  });
+
+  it("colours stderr as attention and stdout as quiet", () => {
+    expect(outputColour(out("l1", 1, "err"))).toContain("warn");
+    expect(outputColour(out("l1", 1, "out"))).toContain("ink-2");
   });
 
   it("does not treat an ordinary stderr line as a failure", () => {

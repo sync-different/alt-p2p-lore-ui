@@ -92,7 +92,7 @@ export default function App() {
   const { notices, push, clear: clearNotices } = useNotices();
   // Every `lore` process the backend spawns. Recorded whether or not debug is on, so that
   // switching it on after a failure still shows what led there.
-  const { traces, tunnel: tunnelOutput, clear: clearTraces } = useLoreTrace();
+  const { traces, tunnel: tunnelOutput, output: loreOutput, clear: clearTraces } = useLoreTrace();
   const [settings, setSettings] = useState<Settings>(() => loadSettings());
   const [showSettings, setShowSettings] = useState(false);
   const updateSettings = useCallback((next: Settings) => {
@@ -704,6 +704,7 @@ export default function App() {
         notices={notices}
         traces={traces}
         tunnel={tunnelOutput}
+        output={loreOutput}
         debugEnabled={settings.debug}
         onClear={() => {
           clearNotices();

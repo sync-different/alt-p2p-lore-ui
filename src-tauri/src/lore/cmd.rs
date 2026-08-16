@@ -14,6 +14,7 @@ use serde::Serialize;
 use std::path::Path;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
+use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
 /// Default ceiling for a repository command.
@@ -21,6 +22,21 @@ use tauri_plugin_shell::ShellExt;
 /// Generous next to the 0.06s a status takes on a 2 GB repository, because it also covers
 /// operations that touch a lot of files. It exists to end a hang, not to police latency.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Deadline for an operation that moves the repository's data over the network.
+///
+/// `commit` uploads every changed fragment to the host's immutable store, and `sync` pulls
+/// the remote's changes down — both scale with the *data*, not with a fixed cost, and on a
+/// large repository or a slow link they run for minutes. The default 120s is far too short:
+/// a sync that pulled a multi-hundred-MB delta failed with "did not finish within 120s" while
+/// it was progressing perfectly, and `sync` even carried a comment saying it must *not* be
+/// capped — but passed `None`, which resolves to the 120s default rather than to no cap.
+///
+/// One hour is chosen to cover a genuinely large transfer over a poor connection while still
+/// ending a truly hung process rather than hanging forever. It is a stopgap: the correct fix
+/// is to stream these like `clone` and bound them on *liveness* (no output for N seconds)
+/// rather than on wall-clock — which would also give them the progress feedback they lack.
+pub const DATA_TRANSFER_TIMEOUT: Duration = Duration::from_secs(3600);
 
 /// Deadline for a read the user is waiting on.
 ///
@@ -41,6 +57,21 @@ pub const INTERACTIVE_TIMEOUT: Duration = Duration::from_secs(20);
 /// from server", so a longer deadline here would only add silence after the CLI had already
 /// decided. Matching it keeps the app's answer as prompt as the tool's.
 pub const HOST_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Deadline for `lore status --scan`.
+///
+/// `--scan` walks the working copy and **hashes file content** to detect changes, so it scales
+/// with the size of the repository, not with a fixed cost. On a large one — the reference case
+/// is two 4 GB files — a scan runs for minutes, and the shorter read deadlines failed a re-read
+/// that was working: "did not finish within 120s" fired straight after a discard that had
+/// already restored the file. Sized like a data transfer, for the same reason.
+///
+/// Crucially this is **not** the host-hang guard the other read deadlines are. A `--scan`
+/// completes on a *down* host (it omits the remote lines), and a *hung* host is caught within
+/// 15s by the reachability probe, independently of this call — so a long deadline here cannot
+/// leave the UI stuck on a sleeping host. It only stops a legitimately large local scan from
+/// being killed mid-work.
+pub const SCAN_TIMEOUT: Duration = Duration::from_secs(3600);
 
 #[derive(Serialize, Clone, Debug)]
 pub struct LoreOutput {
@@ -123,6 +154,28 @@ pub fn redact(args: &[String]) -> String {
     out.join(" ")
 }
 
+/// Append user-supplied positional values after a `--` separator.
+///
+/// Everything before `--` is the app's own flags; everything after is data, however it looks.
+/// Without this, a branch named `-wip`, a commit message beginning `-`, or a file called
+/// `-report.txt` is parsed by `lore` as an option: it fails with `unexpected argument '-w'`
+/// or, worse for a branch, `the following required arguments were not provided: <branch>` —
+/// an error that names nothing the user did. `lore` itself prints the fix in that message
+/// (`tip: to pass '-r' as a value, use '-- -r'`), and accepts `--` on every subcommand tested,
+/// including those with no positional and a trailing separator.
+///
+/// A single choke point rather than a `--` at each call site, because the failure mode of
+/// forgetting one is silent until somebody types a leading dash — exactly the input nobody
+/// tries until a user does.
+pub fn with_positional(mut flags: Vec<String>, positionals: impl IntoIterator<Item = String>) -> Vec<String> {
+    let values: Vec<String> = positionals.into_iter().collect();
+    if !values.is_empty() {
+        flags.push("--".into());
+        flags.extend(values);
+    }
+    flags
+}
+
 /// Does this argument look like a JWT?
 ///
 /// Three dot-separated segments of base64url, the middle one long enough to be a payload.
@@ -162,25 +215,63 @@ pub async fn run(
         .args(args);
 
     let limit = timeout.unwrap_or(DEFAULT_TIMEOUT);
-    let output = match tokio::time::timeout(limit, cmd.output()).await {
-        Err(_) => {
-            let e = LoreError::TimedOut { seconds: limit.as_secs(), command: pretty.clone() };
-            trace(app, &pretty, cwd, started, None, Some(&e.to_string()));
-            return Err(e);
-        }
-        Ok(Err(e)) => {
+
+    // Spawn and stream rather than buffer with `.output()`. `lore` narrates the long operations
+    // as it works — `Fragmenting files…`, `Committing staged changes`, `Synchronizing to
+    // revision…`, warnings — and that narration is exactly what the debug console is for. A
+    // commit or sync that moves gigabytes is then legible *while* it runs, one line at a time,
+    // instead of appearing frozen and then dumping everything at the end. The full output is
+    // still accumulated for the return value, the error, and the one-line trace.
+    let (mut rx, mut child) = match cmd.spawn() {
+        Ok(pair) => pair,
+        Err(e) => {
             let e = LoreError::Spawn(e.to_string());
             trace(app, &pretty, cwd, started, None, Some(&e.to_string()));
             return Err(e);
         }
-        Ok(Ok(o)) => o,
     };
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    let code = output.status.code();
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    let mut code: Option<i32> = None;
 
-    if !output.status.success() {
+    let pump = async {
+        while let Some(ev) = rx.recv().await {
+            match ev {
+                CommandEvent::Stdout(bytes) => {
+                    let text = String::from_utf8_lossy(&bytes);
+                    for l in text.lines() {
+                        if !l.trim().is_empty() {
+                            emit_line(app, &pretty, "out", l);
+                        }
+                    }
+                    stdout.push_str(&text);
+                }
+                CommandEvent::Stderr(bytes) => {
+                    let text = String::from_utf8_lossy(&bytes);
+                    for l in text.lines() {
+                        if !l.trim().is_empty() {
+                            emit_line(app, &pretty, "err", l);
+                        }
+                    }
+                    stderr.push_str(&text);
+                }
+                CommandEvent::Terminated(payload) => code = payload.code,
+                _ => {}
+            }
+        }
+    };
+
+    if tokio::time::timeout(limit, pump).await.is_err() {
+        // Deadline hit: kill the child so it cannot outlive the call (the same orphan the old
+        // `.output()` path left behind on timeout — `timeout` only drops the future), then report.
+        let _ = child.kill();
+        let e = LoreError::TimedOut { seconds: limit.as_secs(), command: pretty.clone() };
+        trace(app, &pretty, cwd, started, None, Some(&e.to_string()));
+        return Err(e);
+    }
+
+    if code != Some(0) {
         trace(app, &pretty, cwd, started, code, Some(stderr.trim()));
         return Err(LoreError::Failed { code, stderr, command: pretty });
     }
@@ -204,6 +295,55 @@ pub struct LoreTrace {
 
 /// The event name the console listens on.
 pub const TRACE_EVENT: &str = "lore://command";
+
+/// A single line of a `lore` command's live output, on its way to the debug console.
+#[derive(Serialize, Clone, Debug)]
+pub struct LoreLine {
+    /// The redacted command this line belongs to, so the console can attribute it — several
+    /// commands can be in flight at once (a background read while a commit runs).
+    pub command: String,
+    /// `"out"` or `"err"`.
+    pub stream: String,
+    /// Already redacted — this is the string that reaches the screen.
+    pub line: String,
+}
+
+/// The event name the console listens on for streamed command output.
+pub const OUTPUT_EVENT: &str = "lore://output";
+
+/// Redact any token-shaped word in a line before it is displayed.
+///
+/// The command *arguments* are already redacted by `redact`; this is the same guard for the
+/// command's *output*, which is now shown on screen too. `lore`'s repository output is phase
+/// text and hashes — no credentials — but `auth` output can carry one, and a diagnostic must
+/// never be the thing that prints a bearer token. Narrow by the same JWT shape test, so a false
+/// positive only ever blanks one hash-like word rather than swallowing a whole line.
+fn redact_line(line: &str) -> String {
+    // Fast path: a JWT has dots, so a line without one cannot contain the shape we hide.
+    if !line.contains('.') {
+        return line.to_string();
+    }
+    line.split(' ')
+        .map(|w| if looks_like_a_token(w) { "***" } else { w })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Emit one line of command output to the console. Failures to emit are ignored, for the same
+/// reason as `trace`: a diagnostic must not be able to break the operation it describes.
+///
+/// Public so `clone` — which runs `lore` through a pseudo-terminal rather than through `run`,
+/// and so bypasses the streaming above — can put its own narration on the same console stream.
+pub fn emit_line(app: &AppHandle, command: &str, stream: &str, line: &str) {
+    let _ = app.emit(
+        OUTPUT_EVENT,
+        LoreLine {
+            command: command.to_string(),
+            stream: stream.to_string(),
+            line: redact_line(line),
+        },
+    );
+}
 
 /// Emit a trace, always.
 ///
@@ -237,7 +377,21 @@ fn trace(
 
 #[cfg(test)]
 mod tests {
-    use super::redact;
+    use super::{redact, redact_line, with_positional};
+
+    #[test]
+    fn output_lines_hide_token_shaped_words_but_keep_hashes() {
+        // A commit prints hashes freely — those must survive, or the console is useless.
+        let hash = "Signature : 66b219262de3e3aa461502dbf2d4b52fa01432f25acec1f9ffdad5d3f3e894a2";
+        assert_eq!(redact_line(hash), hash, "a bare hex hash is not a JWT and must show");
+        // A three-segment JWT anywhere in a line is blanked.
+        let jwt = "eyJhbGciOiJI.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4.dozjgNryP4J3";
+        let redacted = redact_line(&format!("token stored: {jwt}"));
+        assert!(!redacted.contains(jwt), "a JWT-shaped word must be hidden");
+        assert!(redacted.contains("***"));
+        // A line with no dot at all takes the fast path unchanged.
+        assert_eq!(redact_line("Fragmenting files and updating tree hashes"), "Fragmenting files and updating tree hashes");
+    }
 
     fn v(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
@@ -253,6 +407,49 @@ mod tests {
         // Comfortably above a working host: a status scan of the 2 GiB reference repository
         // is 225ms cold. A deadline near that would fail on an ordinary slow moment.
         assert!(super::INTERACTIVE_TIMEOUT.as_secs() >= 10);
+        // A data transfer (commit/sync) is the longest of all — it moves gigabytes and must
+        // outrun the 120s default, which failed a legitimate large sync mid-progress (B7).
+        assert!(super::DATA_TRANSFER_TIMEOUT > super::DEFAULT_TIMEOUT);
+        assert!(super::DATA_TRANSFER_TIMEOUT.as_secs() >= 1800);
+        // A status --scan hashes file content, so it scales with the repository like a transfer
+        // rather than like a quick read — it must outrun the 120s default too, which failed a
+        // post-write re-read on a large repo ("did not finish within 120s" after a good discard).
+        assert!(super::SCAN_TIMEOUT > super::DEFAULT_TIMEOUT);
+    }
+
+    #[test]
+    fn positionals_are_placed_after_a_separator() {
+        // The bug this prevents, reproduced live against lore 0.8.6: a branch named "-wip", a
+        // commit message "-oops", a file "-report.txt" were each parsed as an option. lore
+        // failed with "unexpected argument '-w'" or, for a branch, "required arguments were
+        // not provided: <branch>" — an error naming nothing the user did.
+        let args = with_positional(vec!["commit".into()], ["-oops".to_string()]);
+        assert_eq!(args, vec!["commit", "--", "-oops"]);
+    }
+
+    #[test]
+    fn a_dash_prefixed_value_is_protected() {
+        let args = with_positional(
+            vec!["stage".into(), "--scan".into()],
+            ["-report.txt".to_string(), "normal.txt".to_string()],
+        );
+        // Real flags stay before the separator; every user value goes after it.
+        assert_eq!(args, vec!["stage", "--scan", "--", "-report.txt", "normal.txt"]);
+    }
+
+    #[test]
+    fn no_separator_is_added_when_there_is_nothing_to_protect() {
+        // A bare `--` with no positional is accepted by lore, but adding one for nothing is
+        // noise in every logged command, and the empty case is common (a status with no args).
+        let args = with_positional(vec!["branch".into(), "list".into()], std::iter::empty());
+        assert_eq!(args, vec!["branch", "list"]);
+    }
+
+    #[test]
+    fn a_value_that_merely_contains_a_dash_still_works() {
+        // The common case must not regress: most paths and branches have dashes in the middle.
+        let args = with_positional(vec!["branch".into(), "create".into()], ["feature-x".to_string()]);
+        assert_eq!(args, vec!["branch", "create", "--", "feature-x"]);
     }
 
     #[test]
