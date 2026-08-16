@@ -137,7 +137,7 @@ pub async fn list_locks(
     let out = cmd::run(
         &app,
         &cwd,
-        vec!["lock".into(), "query".into(), "--branch".into(), branch.clone()],
+        vec!["lock".into(), "query".into(), format!("--branch={}", branch.clone())],
         Some(cmd::HOST_READ_TIMEOUT),
     )
     .await
@@ -176,12 +176,13 @@ async fn attribute(
 ) {
     for account in accounts {
         let mut args: Vec<String> = vec!["lock".into(), "query".into()];
+        // = form, not space-separated: a value beginning with `-` (a branch or account id)
+        // is otherwise read as a flag — `--branch -x` fails with `unexpected argument '-x'`,
+        // which here would silently drop attribution rather than error visibly.
         if let Some(b) = branch {
-            args.push("--branch".into());
-            args.push(b.to_string());
+            args.push(format!("--branch={b}"));
         }
-        args.push("--owner".into());
-        args.push(account.id.clone());
+        args.push(format!("--owner={}", account.id));
 
         // A failure here ends attribution rather than skipping one account. The reason it
         // fails is a property of the *host*, not of the account: a server with no identity
@@ -229,8 +230,7 @@ pub async fn acquire_locks(
     }
     let cwd = PathBuf::from(path);
 
-    let mut args: Vec<String> = vec!["lock".into(), "acquire".into()];
-    args.extend(paths.iter().cloned());
+    let args = cmd::with_positional(vec!["lock".into(), "acquire".into()], paths.iter().cloned());
 
     match cmd::run(&app, &cwd, args, None).await {
         Ok(out) => Ok(parse_lock_report(&out.stdout)),
@@ -266,11 +266,11 @@ pub async fn release_locks(
     }
     let cwd = PathBuf::from(path);
 
-    let mut args: Vec<String> = vec!["lock".into(), "release".into()];
-    args.extend(paths.iter().cloned());
+    let mut flags: Vec<String> = vec!["lock".into(), "release".into()];
     if force {
-        args.push("--force".into());
+        flags.push("--force".into());
     }
+    let args = cmd::with_positional(flags, paths.iter().cloned());
 
     let out = cmd::run(&app, &cwd, args, None).await.map_err(|e| e.to_string())?;
     Ok(parse_lock_report(&out.stdout))

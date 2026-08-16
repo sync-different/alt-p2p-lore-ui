@@ -207,6 +207,15 @@ pub fn parse_rfc2822_ms(s: &str) -> Option<i64> {
     let month_name = parts.next()?;
     let month = MONTHS.iter().position(|m| *m == month_name)? as i64 + 1;
     let year: i64 = parts.next()?.parse().ok()?;
+    // Bound the year so the i64 arithmetic below cannot overflow — a 19-digit year in a
+    // corrupt store or malformed token panics in debug and wraps to a garbage millisecond in
+    // release. A 4-digit ceiling is far past any real token expiry (hours away, not millennia)
+    // and still admits the pre-epoch dates the conversion is deliberately built to handle
+    // (1900 gives a negative epoch, and a test pins it). Rejected, it becomes `Unknown`, which
+    // the UI treats as "cannot read — warn".
+    if !(0..=9999).contains(&year) {
+        return None;
+    }
 
     let mut hms = parts.next()?.split(':');
     let hour: i64 = hms.next()?.parse().ok()?;
@@ -712,5 +721,21 @@ mod tests {
         assert!(!looks_like_auth_failure("connection refused"));
         assert!(!looks_like_auth_failure("no such file or directory"));
         assert!(!looks_like_auth_failure("the repository is locked by someone else"));
+    }
+
+    #[test]
+    fn out_of_range_years_are_rejected_not_panicked() {
+        // B4, found by fuzzing: a 19-digit year in an Expires line overflowed the i64
+        // arithmetic — a panic in debug builds, a silent wrap to a garbage millisecond in
+        // release. The value comes from a JWT's `exp` via `lore auth list`, so a corrupt store
+        // or malformed token could reach it. Bounded to a plausible range, it becomes Unknown,
+        // which the UI already treats as "cannot read — warn".
+        assert_eq!(parse_rfc2822_ms("Fri, 14 Aug 999999999999999999 05:11:52 +0000"), None);
+        // A 5+ digit year overflows; a plausible small one is allowed through and simply
+        // reads as a very old, harmless date.
+        assert!(parse_rfc2822_ms("Fri, 14 Aug 99999 05:11:52 +0000").is_none());
+        assert!(parse_rfc2822_ms("Fri, 14 Aug 2026 05:11:52 +0000").is_some());
+        assert!(parse_rfc2822_ms("Thu, 01 Jan 1970 00:00:00 +0000").is_some());
+        assert!(parse_rfc2822_ms("Fri, 31 Dec 9999 23:59:59 +0000").is_some());
     }
 }
