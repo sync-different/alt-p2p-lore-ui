@@ -456,11 +456,42 @@ somewhere else:
 The last one is worth dwelling on, because everything visible said the network was fine: TLS 1.3
 completed, ALPN negotiated `h2`, the tunnel forwarded 9443, and `lore repository list` answered
 through it. The service presents a leaf signed by a private CA and sends no issuer, so
-verification failed and no `authorization` header was attached. `tls-native-roots` means the OS
-trust store is the fix — `Import-Certificate -CertStoreLocation Cert:\CurrentUser\Root` is enough,
-and the app's child processes inherit it. Verify the CA against the live endpoint
-(`openssl s_client -CAfile …` → `Verify return code: 0`) before installing it, rather than
-trusting a certificate because its CN looks familiar.
+verification failed and no `authorization` header was attached. `tls-native-roots` means the **OS
+trust store is the fix**, and the app's child processes inherit it — so it is one trust-store
+import, per user, and confirmed on both Windows and macOS. The app cannot do it for you: adding a
+trusted root requires user authorization by design.
+
+**Always verify the CA against the live endpoint first** — through the tunnel, speaking the
+protocol it speaks (`h2`), which is why plain `curl` misleads (see below):
+
+```bash
+echo | openssl s_client -connect 127.0.0.1:9443 -alpn h2 -CAfile <ca.pem> 2>/dev/null | grep "Verify return code"
+# want: Verify return code: 0 (ok)   —  never trust a cert because its CN looks familiar
+```
+
+Then import it (the CA file is `<ca.pem>`; on ctone it is `~/.lore-auth/ctone-ca.pem`):
+
+```powershell
+# Windows (PowerShell) — per-user root store
+Import-Certificate -FilePath <ca.crt> -CertStoreLocation Cert:\CurrentUser\Root
+```
+```bash
+# macOS — login keychain, scoped to the SSL policy (no sudo; a GUI/password prompt is expected)
+security add-trusted-cert -r trustRoot -p ssl -k ~/Library/Keychains/login.keychain-db <ca.pem>
+# remove:  security delete-certificate -c "alt-p2p-lore-identity CA (ctone)"
+```
+```bash
+# Linux — system trust store (root). Debian/Ubuntu:
+sudo cp <ca.pem> /usr/local/share/ca-certificates/ctone-ca.crt && sudo update-ca-certificates
+# Fedora/RHEL:
+sudo cp <ca.pem> /etc/pki/ca-trust/source/anchors/ctone-ca.pem && sudo update-ca-trust
+```
+
+**macOS gotcha, learned live:** `security verify-cert -c <ca.pem>` keeps reporting
+`CSSMERR_TP_NOT_TRUSTED` *even after a working import*, because it evaluates the **basic** policy
+while the trust above is scoped to `-p ssl` — which is exactly the policy `lore` uses. Do not
+chase that; the real proof is a `lore` call succeeding (`lore lock query --branch=main` returning
+locks instead of `transport error`).
 
 **A method note, since two diagnoses here went wrong before they went right.** Both times the
 fix came from running the failing command *outside the app* — bare `lore clone` reproduced the
