@@ -134,7 +134,12 @@ export function CloneDialog({
   useEffect(() => {
     const un = listen<Progress>("clone://progress", (e) => {
       if (e.payload.id !== id) return;
-      if (e.payload.bytes != null) setBytes(e.payload.bytes);
+      // Monotonic, same as sync's counter: the backend's on-disk measurement can dip for a tick
+      // when it races a file being renamed, and a downloaded counter must never go backwards.
+      if (e.payload.bytes != null) {
+        const b = e.payload.bytes;
+        setBytes((prev) => Math.max(prev, b));
+      }
       if (e.payload.total_bytes != null) setTotalBytes(e.payload.total_bytes);
       if (e.payload.percent != null) setReported(e.payload.percent);
       if (e.payload.done === true) {
@@ -275,7 +280,10 @@ export function CloneDialog({
 
   return (
     <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/50 p-6">
-      <div className="max-h-full w-[36rem] overflow-auto rounded border border-line bg-surface-1 p-5">
+      {/* Height capped (not `max-h-full`) so a tall clone form never extends down under the
+          console strip, which now sits above this backdrop and would otherwise hide the
+          Clone/Cancel buttons. The body scrolls within the box instead. */}
+      <div className="max-h-[calc(100vh-14rem)] w-[36rem] overflow-auto rounded border border-line bg-surface-1 p-5">
         <h2 className="text-ink-0">Clone a repository</h2>
         <p className="mt-1 text-ink-2">
           A second clone of the same repository is fine — that is how one person works as two

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { FileTree } from "./FileTree";
 import { ChangesPanel } from "./ChangesPanel";
 import { BranchBar } from "./BranchBar";
@@ -6,6 +6,8 @@ import { LockBar } from "./LockBar";
 import { BreakLockDialog } from "./BreakLockDialog";
 import { filterPaths, type FileLock } from "../lib/repo";
 import type { useRepository } from "../hooks/useRepository";
+import { useOperationProgress } from "../hooks/useOperationProgress";
+import { formatElapsed } from "../lib/clone";
 
 /**
  * The left column: open a repository, then browse it.
@@ -34,6 +36,26 @@ export function RepoPanel({
   const [flat, setFlat] = useState(false);
   /** The lock a confirmation is open for; held as the lock, not the path — see below. */
   const [breaking, setBreaking] = useState<FileLock | null>(null);
+
+  // Live progress for the repo-level operations that re-materialise or transfer files, shown in
+  // the BranchBar. Called before the `!repo.info` early return below so the hook count stays
+  // stable; each no-ops on an undefined path. Only one of these is ever active at once, so the
+  // first non-null wins.
+  const syncProgress = useOperationProgress(repo.info?.path, "sync");
+  const switchProgress = useOperationProgress(repo.info?.path, "switch");
+  const abortProgress = useOperationProgress(repo.info?.path, "abort");
+  const resolveProgress = useOperationProgress(repo.info?.path, "resolve");
+  const opProgress = syncProgress ?? switchProgress ?? abortProgress ?? resolveProgress;
+
+  // Tick an elapsed clock while a slow status re-read ("Scanning…") is showing. Only runs when
+  // there is something to count, so an idle repo never re-renders on a timer.
+  const [now, setNow] = useState(0);
+  useEffect(() => {
+    if (!repo.scanStart) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(t);
+  }, [repo.scanStart]);
 
   const visible = filter
     ? repo.rows.filter((r) => filterPaths([{ path: r.entry.rel_path }], filter).length > 0)
@@ -85,6 +107,17 @@ export function RepoPanel({
           Changed{changedCount > 0 ? ` (${changedCount})` : ""}
         </button>
         <span className="ml-auto" />
+        {/* A slow status re-read is minutes of quiet re-hashing on a large repo; say so rather
+            than let the panel look frozen. Only appears after 1s, so a normal repo never sees it. */}
+        {repo.scanStart && (
+          <span className="flex items-center gap-1.5 pr-1 text-[11px] text-ink-2">
+            <span
+              className="inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent"
+              aria-hidden
+            />
+            <span>Scanning… {formatElapsed(Math.max(0, (now - repo.scanStart) / 1000))}</span>
+          </span>
+        )}
         {repo.mode === "changed" && (
           <button
             onClick={() => setFlat((v) => !v)}
@@ -153,6 +186,8 @@ export function RepoPanel({
       <BranchBar
         status={repo.info.status}
         busy={repo.staging}
+        progress={opProgress}
+        stuck={repo.syncStuck}
         onSync={() => void repo.sync()}
         onPush={() => void repo.push()}
         onResolve={(mine) => void repo.resolve(repo.info!.status.conflicts, mine)}

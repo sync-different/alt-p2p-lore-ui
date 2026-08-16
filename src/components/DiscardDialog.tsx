@@ -2,6 +2,8 @@ import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { ChangeEntry, RepoStatus } from "../lib/repo";
 import { explainError } from "../lib/auth";
+import { formatBytes, formatElapsed, formatRate } from "../lib/clone";
+import { useOperationProgress } from "../hooks/useOperationProgress";
 
 /**
  * Throwing work away — the one action here that cannot be undone.
@@ -32,6 +34,11 @@ export function DiscardDialog({
   const [alsoDelete, setAlsoDelete] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Restoring a deleted file re-materialises it onto disk — potentially gigabytes — so this is a
+  // real data operation, not an instant one. The monitor's bytes-on-disk climb is what makes a
+  // long restore legible instead of a frozen button (see progress.rs / reset_paths).
+  const progress = useOperationProgress(path, "reset");
 
   // A file lore has never committed is "added"; anything else has a revision to go back to.
   const isNew = (c: ChangeEntry) => c.kind === "added";
@@ -111,6 +118,29 @@ export function DiscardDialog({
         )}
 
         {error && <p className="mt-3 selectable text-danger">{error}</p>}
+
+        {/* Alive-not-hung feedback while it runs. A restore re-materialises files, so bytes climb
+            (shown); a pure purge deletes and leaves nothing to count, so it is just the timer. */}
+        {busy && (
+          <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-ink-2">
+            <span
+              className="inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent"
+              aria-hidden
+            />
+            <span className="text-ink-1">Discarding…</span>
+            {progress && progress.received > 0 && (
+              <span className="tabular-nums" title="Restored so far">
+                {formatBytes(progress.received)}
+              </span>
+            )}
+            {progress?.rate != null && (
+              <span className="tabular-nums">· {formatRate(progress.rate)}</span>
+            )}
+            <span className="ml-auto tabular-nums">
+              {formatElapsed(progress?.elapsedSeconds ?? 0)}
+            </span>
+          </div>
+        )}
 
         <div className="mt-5 flex justify-end gap-2">
           <button

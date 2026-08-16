@@ -51,6 +51,20 @@ export function useRepository(onEvent?: OnEvent) {
   const [info, setInfo] = useState<RepoInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // When the current status re-read started, but only once it has been running long enough to be
+  // worth mentioning (>1s). `status --scan` re-hashes changed files, so on a large repository an
+  // on-focus/refresh re-read is minutes of quiet work; this lets the UI say "Scanning…" instead
+  // of appearing frozen. Null when idle or when a read returns fast, so a normal repo never sees
+  // it flash. The timestamp (not a bool) lets the panel tick an elapsed clock.
+  const [scanStart, setScanStart] = useState<number | null>(null);
+
+  // A Sync that ran but left the branch still "diverged" with nothing merged. lore's `status`
+  // mislabels a local *merge commit that is already ahead of the host* as diverged, while its
+  // own `sync` reports "already latest" and does nothing and its `push` says "1 ahead, pushing".
+  // Three contradictory answers; the honest read is that there is nothing to pull and the branch
+  // just needs pushing. When we detect that no-op, we say so and let Push through for this one
+  // case — narrow on purpose, so a *genuine* divergence still blocks Push and demands a merge.
+  const [syncStuck, setSyncStuck] = useState(false);
 
   const [mode, setMode] = useState<TreeMode>("all");
   const [loaded, setLoaded] = useState<LoadedDirs>(new Map());
@@ -161,11 +175,18 @@ export function useRepository(onEvent?: OnEvent) {
       return inFlight.current;
     }
 
+    // Trip the "Scanning…" indicator only if this read is still going after a second, so a fast
+    // scan (an unchanged repo returns in well under 0.1s) never flashes it.
+    const startedAt = Date.now();
+    const slow = setTimeout(() => setScanStart(startedAt), 1000);
+
     const run = readEverything(announce);
     inFlight.current = run;
     try {
       await run;
     } finally {
+      clearTimeout(slow);
+      setScanStart(null);
       inFlight.current = null;
       if (pendingRefresh.current) {
         pendingRefresh.current = false;
@@ -198,6 +219,10 @@ export function useRepository(onEvent?: OnEvent) {
       ]);
 
       if (gen !== generation.current) return;
+
+      // The stuck-sync hint is only meaningful while the branch reads diverged; once a push (or
+      // anything else) resolves it, drop it so Push is not left permanently unblocked.
+      if (status.standing !== "diverged") setSyncStuck(false);
 
       setInfo((prev) => (prev ? { ...prev, status } : prev));
       setLoaded(() => {
@@ -407,9 +432,30 @@ export function useRepository(onEvent?: OnEvent) {
    * instead of two, and no window where the list on screen disagrees with what was just done.
    */
   const [staging, setStaging] = useState(false);
+  /**
+   * One write at a time, across *every* write path — staging and the remote operations share
+   * this guard on purpose.
+   *
+   * The `staging` state only disables buttons, which stops a second click and nothing else. A
+   * write can still arrive by another route while one is running: a focus- or host-return
+   * refresh landing mid-commit, a lock action and a stage overlapping, a future programmatic
+   * caller. `lore` locks the repository so nothing is *corrupted*, but each write ends by
+   * adopting the status it returned — and if two overlap, whichever *resolves* last wins,
+   * which need not be whichever *ran* last. The panel then shows the earlier operation's
+   * status while the disk holds the later one's.
+   *
+   * A ref, not the state flag: `setStaging(true)` is asynchronous, so two calls in one tick
+   * both read the old `false` before either re-renders. A ref flips synchronously, so the
+   * second call sees the first immediately. **Refused, not queued** — unlike a refresh, a
+   * second write is a distinct intent, not a stale-view correction, and replaying a write
+   * nobody re-confirmed is the surprise-with-consequences rule from the reconnect work.
+   */
+  const writeInFlight = useRef(false);
   const applyStaging = useCallback(
     async (paths: string[], fn: (path: string, paths: string[]) => Promise<RepoStatus>, verb: string) => {
       if (!info || paths.length === 0) return;
+      if (writeInFlight.current) return;
+      writeInFlight.current = true;
       setStaging(true);
       try {
         const status = await fn(info.path, paths);
@@ -421,6 +467,7 @@ export function useRepository(onEvent?: OnEvent) {
       } catch (e) {
         onEvent?.("error", explainError(String(e), signedInAsRef.current, repoIdentityRef.current).message);
       } finally {
+        writeInFlight.current = false;
         setStaging(false);
       }
     },
@@ -534,6 +581,12 @@ export function useRepository(onEvent?: OnEvent) {
   const runRemote = useCallback(
     async (fn: (path: string) => Promise<RepoStatus>, verb: string) => {
       if (!info) return;
+      // Shares the guard with staging: a push must not overlap a stage, or vice versa. See
+      // writeInFlight above.
+      if (writeInFlight.current) return;
+      writeInFlight.current = true;
+      // A fresh operation supersedes any earlier stuck-sync state.
+      setSyncStuck(false);
       setStaging(true);
       try {
         const status = await fn(info.path);
@@ -543,6 +596,15 @@ export function useRepository(onEvent?: OnEvent) {
           onEvent?.(
             "warn",
             `${verb} left ${status.conflicts.length} file${status.conflicts.length === 1 ? "" : "s"} in conflict.`,
+          );
+        } else if (verb === "Sync" && status.standing === "diverged" && !status.pending_merge) {
+          // Sync returned but the branch is *still* diverged and nothing was merged — the lore
+          // contradiction described at `syncStuck`. Say what happened and unblock Push, which is
+          // the actual resolution (lore's own push confirms the branch is ahead and pushable).
+          setSyncStuck(true);
+          onEvent?.(
+            "warn",
+            "Sync found nothing to merge — the host is behind your local merge, not ahead of it. Push to publish it.",
           );
         } else {
           onEvent?.("success", `${verb} finished.`);
@@ -557,6 +619,7 @@ export function useRepository(onEvent?: OnEvent) {
           repoIdentityRef.current,
         ).message);
       } finally {
+        writeInFlight.current = false;
         setStaging(false);
       }
     },
@@ -668,6 +731,8 @@ export function useRepository(onEvent?: OnEvent) {
     info,
     error,
     busy,
+    scanStart,
+    syncStuck,
     mode,
     setMode,
     rows,

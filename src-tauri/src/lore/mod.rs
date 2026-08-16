@@ -5,4 +5,5 @@ pub mod cmd;
 pub mod content;
 pub mod locks;
 pub mod parse;
+pub mod progress;
 pub mod repo;

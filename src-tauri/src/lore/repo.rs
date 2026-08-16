@@ -7,6 +7,7 @@
 
 use super::cmd::{self, LoreError};
 use super::parse::{self, Branches, FileDiff, RepoStatus};
+use super::progress;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
@@ -264,9 +265,12 @@ pub async fn stage_paths(app: AppHandle, path: String, paths: Vec<String>) -> Re
         return Err("Nothing was selected to stage.".into());
     }
     let cwd = PathBuf::from(&path);
-    let mut args = vec!["stage".into(), "--scan".into()];
-    args.extend(paths);
-    cmd::run(&app, &cwd, args, None).await.map_err(to_message)?;
+    let args = cmd::with_positional(vec!["stage".into(), "--scan".into()], paths);
+    // Staging hashes the file content, so staging a multi-GB file scales with its size, not a
+    // fixed cost — the same reason commit and reset get the long deadline rather than 120s.
+    cmd::run(&app, &cwd, args, Some(cmd::DATA_TRANSFER_TIMEOUT))
+        .await
+        .map_err(to_message)?;
     read_status(&app, &cwd).await
 }
 
@@ -277,16 +281,41 @@ pub async fn unstage_paths(app: AppHandle, path: String, paths: Vec<String>) -> 
         return Err("Nothing was selected to unstage.".into());
     }
     let cwd = PathBuf::from(&path);
-    let mut args = vec!["unstage".into()];
-    args.extend(paths);
+    let args = cmd::with_positional(vec!["unstage".into()], paths);
     cmd::run(&app, &cwd, args, None).await.map_err(to_message)?;
     read_status(&app, &cwd).await
 }
 
 /// Read status the one way it is ever read.
 async fn read_status(app: &AppHandle, cwd: &Path) -> Result<RepoStatus, String> {
-    let out = cmd::run(app, cwd, status_args(), Some(cmd::INTERACTIVE_TIMEOUT)).await.map_err(to_message)?;
+    let out = cmd::run(app, cwd, status_args(), Some(cmd::SCAN_TIMEOUT)).await.map_err(to_message)?;
     Ok(parse::parse_status(&out.stdout))
+}
+
+/// Run a data-moving write under a progress monitor, then return the status it produced — with
+/// the monitor kept alive across **both** the command and the status re-read.
+///
+/// The re-read is the subtle part: `status --scan` re-hashes changed files, so on a large
+/// repository it is itself minutes of work. If the monitor stopped when the command returned,
+/// the operation's UI would look finished and then sit frozen through that scan (observed: a
+/// restore that completed, then a re-read that "did not finish within 120s"). Keeping the same
+/// monitor running means its "still working — Ns" signal covers the scan too; bytes stay flat
+/// there (a scan writes nothing) while the elapsed clock keeps the UI honest that it is alive.
+async fn run_monitored(
+    app: &AppHandle,
+    cwd: &Path,
+    path: &str,
+    op: &str,
+    args: Vec<String>,
+) -> Result<RepoStatus, String> {
+    let monitor = progress::Monitor::start(app.clone(), path.to_string(), op);
+    let ran = cmd::run(app, cwd, args, Some(cmd::DATA_TRANSFER_TIMEOUT)).await;
+    let result = match ran {
+        Ok(_) => read_status(app, cwd).await,
+        Err(e) => Err(to_message(e)),
+    };
+    monitor.finish().await;
+    result
 }
 
 /// Commit what is staged.
@@ -304,10 +333,18 @@ pub async fn commit(app: AppHandle, path: String, message: String) -> Result<Rep
         return Err("A commit needs a message.".into());
     }
     let cwd = PathBuf::from(&path);
-    cmd::run(&app, &cwd, vec!["commit".into(), message], None)
-        .await
-        .map_err(to_message)?;
-    read_status(&app, &cwd).await
+    // Commit uploads every changed fragment to the host — the heavy network operation, not push
+    // (which only moves the branch pointer). Its data goes *up*, so the working copy barely
+    // changes on disk and the elapsed timer is what tells the UI it is alive; still worth the
+    // monitor, since a multi-GB commit is otherwise a frozen button for minutes.
+    run_monitored(
+        &app,
+        &cwd,
+        &path,
+        "commit",
+        cmd::with_positional(vec!["commit".into()], [message]),
+    )
+    .await
 }
 
 /// Throw away changes.
@@ -333,13 +370,17 @@ pub async fn reset_paths(
         return Err("Nothing was selected to discard.".into());
     }
     let cwd = PathBuf::from(&path);
-    let mut args = vec!["reset".into()];
+    let mut flags = vec!["reset".into()];
     if purge {
-        args.push("--purge".into());
+        flags.push("--purge".into());
     }
-    args.extend(paths);
-    cmd::run(&app, &cwd, args, None).await.map_err(to_message)?;
-    read_status(&app, &cwd).await
+    let args = cmd::with_positional(flags, paths);
+    // Restoring a deleted file re-materialises it from the store, and a purge can remove a lot of
+    // data — both scale with the file. Observed: discarding a deleted 4 GB file ran `lore reset`
+    // past the 120s default and the restore "failed" on a timeout while it was still working.
+    // Runs under the monitor (bytes climb as the file is restored), which also covers the slow
+    // post-restore status scan that used to freeze the dialog. See run_monitored.
+    run_monitored(&app, &cwd, &path, "reset", args).await
 }
 
 /// Bring the remote's work down, merging if both sides have moved.
@@ -351,9 +392,11 @@ pub async fn reset_paths(
 #[tauri::command]
 pub async fn sync(app: AppHandle, path: String) -> Result<RepoStatus, String> {
     let cwd = PathBuf::from(&path);
-    // No timeout override: a sync can pull a lot of data on a large repository.
-    cmd::run(&app, &cwd, vec!["sync".into()], None).await.map_err(to_message)?;
-    read_status(&app, &cwd).await
+    // A sync pulls the remote's changes, which scales with the data — minutes on a large delta
+    // or a slow link. It runs under a monitor whose bytes-landing/temp-file progress the UI
+    // shows (see progress.rs and run_monitored); without it a large sync is indistinguishable
+    // from a hang, which was a real report.
+    run_monitored(&app, &cwd, &path, "sync", vec!["sync".into()]).await
 }
 
 /// Send commits to the host.
@@ -365,11 +408,14 @@ pub async fn sync(app: AppHandle, path: String) -> Result<RepoStatus, String> {
 #[tauri::command]
 pub async fn push(app: AppHandle, path: String) -> Result<RepoStatus, String> {
     let cwd = PathBuf::from(&path);
+    // Push is usually an instant pointer move, but if a commit's fragments never reached the host
+    // (committed while it was unreachable), push is what uploads them — a full data transfer. The
+    // long deadline never fires on the common instant case; it only saves the large-upload one.
     cmd::run(
         &app,
         &cwd,
         vec!["push".into(), "--fast-forward-merge".into()],
-        None,
+        Some(cmd::DATA_TRANSFER_TIMEOUT),
     )
     .await
     .map_err(to_message)?;
@@ -395,30 +441,33 @@ pub async fn resolve_conflicts(
         return Err("No conflicted files were selected.".into());
     }
     let cwd = PathBuf::from(&path);
-    let mut args = vec![
+    let flags = vec![
         "branch".into(),
         "merge".into(),
         "resolve".into(),
         if take_mine { "mine".into() } else { "theirs".into() },
     ];
-    args.extend(paths);
-    cmd::run(&app, &cwd, args, None).await.map_err(to_message)?;
-    read_status(&app, &cwd).await
+    let args = cmd::with_positional(flags, paths);
+    // Taking one side of a conflict rewrites the file's content from the store, so a large
+    // conflicted file scales with its size. Monitored like the rest, which also covers the
+    // post-write scan.
+    run_monitored(&app, &cwd, &path, "resolve", args).await
 }
 
 /// Abandon a merge and go back to where the working copy was before it started.
 #[tauri::command]
 pub async fn abort_merge(app: AppHandle, path: String) -> Result<RepoStatus, String> {
     let cwd = PathBuf::from(&path);
-    cmd::run(
+    // Abandoning a merge re-materialises the working tree back to its pre-merge state, rewriting
+    // whatever the merge touched — monitored like the rest (bytes climb as files are rewritten).
+    run_monitored(
         &app,
         &cwd,
+        &path,
+        "abort",
         vec!["branch".into(), "merge".into(), "abort".into()],
-        None,
     )
     .await
-    .map_err(to_message)?;
-    read_status(&app, &cwd).await
 }
 
 /// Files whose local edits would be overwritten by a switch.
@@ -450,7 +499,10 @@ pub async fn check_switch_branch(
     match cmd::run(
         &app,
         &cwd,
-        vec!["branch".into(), "switch".into(), branch, "--dry-run".into()],
+        cmd::with_positional(
+            vec!["branch".into(), "switch".into(), "--dry-run".into()],
+            [branch],
+        ),
         None,
     )
     .await
@@ -473,10 +525,17 @@ pub async fn check_switch_branch(
 #[tauri::command]
 pub async fn switch_branch(app: AppHandle, path: String, branch: String) -> Result<RepoStatus, String> {
     let cwd = PathBuf::from(&path);
-    cmd::run(&app, &cwd, vec!["branch".into(), "switch".into(), branch], None)
-        .await
-        .map_err(to_message)?;
-    read_status(&app, &cwd).await
+    // "The working copy is rewritten to match" — switching a branch re-materialises every file
+    // that differs between the two branches. On a large repository that is gigabytes of writes,
+    // monitored like the rest: bytes climb on disk as the files are written.
+    run_monitored(
+        &app,
+        &cwd,
+        &path,
+        "switch",
+        cmd::with_positional(vec!["branch".into(), "switch".into()], [branch]),
+    )
+    .await
 }
 
 /// Start a new branch here, at the current revision.
@@ -487,9 +546,14 @@ pub async fn create_branch(app: AppHandle, path: String, branch: String) -> Resu
         return Err("A branch needs a name.".into());
     }
     let cwd = PathBuf::from(&path);
-    cmd::run(&app, &cwd, vec!["branch".into(), "create".into(), name.clone()], None)
-        .await
-        .map_err(to_message)?;
+    cmd::run(
+        &app,
+        &cwd,
+        cmd::with_positional(vec!["branch".into(), "create".into()], [name.clone()]),
+        None,
+    )
+    .await
+    .map_err(to_message)?;
     // Creating does not switch: lore leaves you where you were, and pretending otherwise
     // would put someone on a branch they did not ask to be on.
     read_status(&app, &cwd).await
@@ -523,7 +587,7 @@ pub async fn open_repo(app: AppHandle, path: String) -> Result<RepoInfo, String>
     let remote = read_remote_url(&cwd);
     let identity = read_identity(&cwd);
 
-    let status_out = cmd::run(&app, &cwd, status_args(), None)
+    let status_out = cmd::run(&app, &cwd, status_args(), Some(cmd::SCAN_TIMEOUT))
         .await
         .map_err(to_message)?;
     let branch_out = cmd::run(
@@ -553,7 +617,7 @@ pub async fn open_repo(app: AppHandle, path: String) -> Result<RepoInfo, String>
 #[tauri::command]
 pub async fn repo_status(app: AppHandle, path: String) -> Result<RepoStatus, String> {
     let cwd = PathBuf::from(path);
-    let out = cmd::run(&app, &cwd, status_args(), None)
+    let out = cmd::run(&app, &cwd, status_args(), Some(cmd::SCAN_TIMEOUT))
         .await
         .map_err(to_message)?;
     Ok(parse::parse_status(&out.stdout))
@@ -566,7 +630,7 @@ pub async fn repo_status(app: AppHandle, path: String) -> Result<RepoStatus, Str
 #[tauri::command]
 pub async fn file_diff(app: AppHandle, path: String, file: String) -> Result<FileDiff, String> {
     let cwd = PathBuf::from(path);
-    let out = cmd::run(&app, &cwd, vec!["diff".into(), file], None)
+    let out = cmd::run(&app, &cwd, cmd::with_positional(vec!["diff".into()], [file]), None)
         .await
         .map_err(to_message)?;
     Ok(parse::parse_diff(&out.stdout))

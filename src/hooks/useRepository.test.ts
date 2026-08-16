@@ -14,6 +14,8 @@ const mockRepoStatus = vi.fn();
 const mockListDir = vi.fn();
 const mockListLocks = vi.fn();
 const mockPush = vi.fn();
+const mockStage = vi.fn();
+const mockSync = vi.fn();
 
 vi.mock("../lib/repo", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/repo")>();
@@ -24,6 +26,8 @@ vi.mock("../lib/repo", async (importOriginal) => {
     listDir: (...a: unknown[]) => mockListDir(...a),
     listLocks: (...a: unknown[]) => mockListLocks(...a),
     pushRepo: (...a: unknown[]) => mockPush(...a),
+    stagePaths: (...a: unknown[]) => mockStage(...a),
+    syncRepo: (...a: unknown[]) => mockSync(...a),
   };
 });
 
@@ -52,6 +56,8 @@ beforeEach(() => {
   mockListDir.mockReset();
   mockListLocks.mockReset();
   mockPush.mockReset();
+  mockStage.mockReset();
+  mockSync.mockReset();
 });
 
 async function openWith(rootEntries: ReturnType<typeof entry>[], identity?: string) {
@@ -550,5 +556,135 @@ describe("a write that failed because the host was away", () => {
       await result.current.push();
     });
     expect(result.current.pendingWrite).toBeNull();
+  });
+});
+
+describe("writes do not overlap (B2)", () => {
+  const deferred = <T>() => {
+    let resolve!: (v: T) => void;
+    const promise = new Promise<T>((r) => (resolve = r));
+    return { promise, resolve };
+  };
+
+  it("runs one write at a time, refusing a second while one is in flight", async () => {
+    // The `staging` flag only disables buttons — a write arriving by any other route (a
+    // focus refresh, a lock action, a programmatic caller) is not stopped by it. Two
+    // overlapping writes each adopt the status they return, so whichever resolves last wins,
+    // which need not be whichever ran last: the panel then shows the earlier op's status.
+    const { result } = await openWith([entry("a.txt")]);
+
+    const first = deferred<ReturnType<typeof status>>();
+    mockPush.mockReturnValueOnce(first.promise);
+
+    // Fire two pushes; the first is still pending.
+    await act(async () => {
+      void result.current.push();
+      void result.current.push();
+      await Promise.resolve();
+    });
+
+    // The second must have been refused at the boundary — not queued, not run.
+    expect(mockPush).toHaveBeenCalledTimes(1);
+
+    // Releasing the first frees the guard; a later write is allowed again.
+    mockPush.mockResolvedValue(status());
+    await act(async () => {
+      first.resolve(status());
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    await act(async () => {
+      await result.current.push();
+    });
+    expect(mockPush).toHaveBeenCalledTimes(2);
+  });
+
+  it("serialises a stage against a push — they share one guard", async () => {
+    // A push and a stage are different code paths but the same repository; letting them
+    // overlap is the same bug wearing different hats. This is the cross-path case the single
+    // shared guard exists for.
+    const { result } = await openWith([entry("a.txt")]);
+    const held = deferred<ReturnType<typeof status>>();
+    mockPush.mockReturnValueOnce(held.promise);
+    mockStage.mockResolvedValue(status());
+
+    await act(async () => {
+      void result.current.push();
+      await Promise.resolve();
+      // A stage arriving while the push is still open must be refused, not queued or run.
+      await result.current.stage(["a.txt"]);
+    });
+
+    expect(mockStage).not.toHaveBeenCalled();
+
+    // Once the push resolves, a stage is allowed again.
+    await act(async () => {
+      held.resolve(status());
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    await act(async () => {
+      await result.current.stage(["a.txt"]);
+    });
+    expect(mockStage).toHaveBeenCalledTimes(1);
+  });
+
+  describe("a sync that finds nothing to merge", () => {
+    const diverged = () => ({
+      ...status(),
+      standing: "diverged" as const,
+      pending_merge: false,
+      conflicts: [],
+    });
+
+    it("flags syncStuck and warns when a sync leaves the branch still diverged", async () => {
+      // lore's contradiction: status says diverged, sync no-ops, push says ahead. When a sync
+      // returns still-diverged with nothing merged, the branch is really a merge ahead of the
+      // host — so say so and let Push through.
+      const events: string[] = [];
+      mockOpenRepo.mockResolvedValue({
+        path: "/repo",
+        status: diverged(),
+        branches: { names: ["main"], current: "main", remote_only: [] },
+        identity: null,
+      });
+      mockListDir.mockResolvedValue([]);
+      const { result } = renderHook(() => useRepository((_l, m) => void events.push(m)));
+      await act(async () => {
+        await result.current.open("/repo");
+      });
+
+      mockSync.mockResolvedValue(diverged());
+      await act(async () => {
+        await result.current.sync();
+      });
+
+      expect(result.current.syncStuck).toBe(true);
+      expect(events.some((m) => /nothing to merge/i.test(m))).toBe(true);
+    });
+
+    it("does not flag it when the sync actually advances the branch", async () => {
+      mockOpenRepo.mockResolvedValue({
+        path: "/repo",
+        status: diverged(),
+        branches: { names: ["main"], current: "main", remote_only: [] },
+        identity: null,
+      });
+      mockListDir.mockResolvedValue([]);
+      const { result } = renderHook(() => useRepository());
+      await act(async () => {
+        await result.current.open("/repo");
+      });
+
+      mockSync.mockResolvedValue({
+        ...status(),
+        standing: "in_sync" as const,
+        pending_merge: false,
+        conflicts: [],
+      });
+      await act(async () => {
+        await result.current.sync();
+      });
+
+      expect(result.current.syncStuck).toBe(false);
+    });
   });
 });

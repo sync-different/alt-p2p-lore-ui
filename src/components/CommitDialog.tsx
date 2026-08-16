@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { describeCommit, describeKind } from "../lib/changes";
 import type { ChangeEntry, RepoStatus } from "../lib/repo";
 import { explainError } from "../lib/auth";
+import { formatElapsed } from "../lib/clone";
+import { useOperationProgress } from "../hooks/useOperationProgress";
 
 /**
  * Write what is staged.
@@ -26,6 +28,11 @@ export function CommitDialog({
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // A commit uploads every changed fragment to the host — the heavy network step, minutes on a
+  // large change — and prints nothing while it does. Its data goes up, not onto disk, so bytes
+  // barely move; the elapsed timer is the signal that it is alive rather than hung.
+  const progress = useOperationProgress(path, "commit");
 
   const commit = async () => {
     setError(null);
@@ -74,6 +81,22 @@ export function CommitDialog({
         </div>
 
         {error && <p className="mt-3 selectable whitespace-pre-wrap text-danger">{error}</p>}
+
+        {/* Alive-not-hung feedback while the upload runs. A large commit is otherwise a frozen
+            "Committing…" button for minutes. Bytes go up rather than to disk, so this is the
+            elapsed timer, not a byte counter — honest about what can actually be measured. */}
+        {busy && (
+          <div className="mt-3 flex items-center gap-2 text-[11px] text-ink-2">
+            <span
+              className="inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent"
+              aria-hidden
+            />
+            <span className="text-ink-1">Uploading to the host…</span>
+            <span className="ml-auto tabular-nums">
+              {formatElapsed(progress?.elapsedSeconds ?? 0)}
+            </span>
+          </div>
+        )}
 
         <div className="mt-5 flex justify-end gap-2">
           <button

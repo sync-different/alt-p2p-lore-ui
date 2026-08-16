@@ -11,6 +11,9 @@
 
 use super::cmd::redact;
 use serde::Serialize;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 pub const CLONE_EVENT: &str = "clone://progress";
@@ -173,9 +176,15 @@ pub fn parse_duration(line: &str) -> Option<f32> {
 pub fn percent_of(line: &str) -> Option<f32> {
     let idx = line.rfind('%')?;
     let head = &line[..idx];
+    // The byte *after* the last non-number character — advanced by that character's own
+    // width, not by 1. `rfind` returns a byte index, and `i + 1` lands inside a multibyte
+    // char (`é50%` panicked with "byte index is not a char boundary"). char_indices gives the
+    // width, so the slice always starts on a boundary.
     let start = head
-        .rfind(|c: char| !(c.is_ascii_digit() || c == '.'))
-        .map(|i| i + 1)
+        .char_indices()
+        .rev()
+        .find(|(_, c)| !(c.is_ascii_digit() || *c == '.'))
+        .map(|(i, c)| i + c.len_utf8())
         .unwrap_or(0);
     let value: f32 = head[start..].parse().ok()?;
     (0.0..=100.0).contains(&value).then_some(value)
@@ -195,8 +204,86 @@ fn dir_size(path: &std::path::Path) -> u64 {
     total
 }
 
+/// Working-tree bytes on disk in the clone destination, excluding the `.lore` store.
+///
+/// The honest progress signal, and the reason a whole sampler exists to call it: lore's own bar
+/// counts a file's bytes only once it is *complete* and renamed out of `.~loretemp`, so with
+/// several multi-GB files downloading at once the bar sits far behind what is truly on disk
+/// (observed: 1.8 GB reported against 9.1 GB written, frozen at 21% for minutes). The
+/// `.~loretemp` files are in the working tree, so they are counted here — by their *written*
+/// blocks (see `on_disk_bytes`), which is what makes the number climb with the download rather
+/// than snap to the preallocated total.
+fn worktree_bytes(dest: &std::path::Path) -> u64 {
+    fn walk(dir: &std::path::Path, total: &mut u64) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            match entry.metadata() {
+                Ok(m) if m.is_dir() => walk(&entry.path(), total),
+                Ok(m) => *total += super::progress::on_disk_bytes(&m),
+                Err(_) => {}
+            }
+        }
+    }
+    let Ok(entries) = std::fs::read_dir(dest) else { return 0 };
+    let mut total = 0;
+    for entry in entries.flatten() {
+        match entry.metadata() {
+            Ok(m) if m.is_dir() => {
+                // Skip the fragment/metadata store; it is not the data the user is receiving,
+                // and on a shared-store clone it would double-count against the working tree.
+                if entry.file_name() != ".lore" {
+                    walk(&entry.path(), &mut total);
+                }
+            }
+            Ok(m) => total += super::progress::on_disk_bytes(&m),
+            Err(_) => {}
+        }
+    }
+    total
+}
+
 fn emit(app: &AppHandle, p: CloneProgress) {
     let _ = app.emit(CLONE_EVENT, p);
+}
+
+/// Remove the partial output of a failed clone. Returns whether anything was removed.
+///
+/// `preexisted` is the folder's state *before* this clone ran, captured while the guards had
+/// just proven it was absent-or-empty. That is what makes this safe: we are not guessing
+/// whether the directory is ours, we recorded it.
+///
+/// - **created by us** (`!preexisted`): remove the whole directory.
+/// - **an empty folder the user made** (`preexisted`): remove its *contents* but keep the
+///   folder — a directory the user chose and may care about (its name, its place) is not ours
+///   to delete, only what we wrote into it.
+///
+/// Refuses if a `.lore` is somehow absent — nothing failed the way we expect, so removing
+/// anything would be acting on a state we do not understand. Every filesystem error is
+/// swallowed: cleanup is best-effort, and a failure to tidy up must not replace the real
+/// error (the network drop) with a permission complaint.
+fn clean_up_partial(dest: &std::path::Path, preexisted: bool) -> bool {
+    // Only ever touch a directory that carries the mark of an interrupted clone. If there is
+    // no `.lore`, lore failed before writing anything and there is nothing of ours to remove.
+    if !dest.join(".lore").is_dir() {
+        return false;
+    }
+
+    if !preexisted {
+        return std::fs::remove_dir_all(dest).is_ok();
+    }
+
+    // The user's own empty folder: clear its contents, keep the folder.
+    let Ok(entries) = std::fs::read_dir(dest) else { return false };
+    let mut removed_any = false;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let ok = match entry.file_type() {
+            Ok(t) if t.is_dir() => std::fs::remove_dir_all(&path).is_ok(),
+            _ => std::fs::remove_file(&path).is_ok(),
+        };
+        removed_any |= ok;
+    }
+    removed_any
 }
 
 /// Clone `url` into `dest`, acting as `identity` if one is given.
@@ -227,6 +314,13 @@ pub async fn clone_repo(
         return Err(format!("{dest} is not empty. Choose an empty folder, or a new one."));
     }
 
+    // Whether the folder existed before this clone touched it. The guards above have already
+    // established the only two possibilities — absent, or present-and-empty — so this single
+    // bool is enough to decide, on failure, exactly what is safe to remove: everything, if we
+    // created the folder; only its contents, if the user made an empty folder and pointed us
+    // at it. A directory the user chose is never removed, only what the clone wrote into it.
+    let dest_preexisted = dest_path.is_dir();
+
     let mut args: Vec<String> = vec!["clone".into(), url.trim().to_string(), dest.clone()];
     if let Some(ref who) = identity {
         args.push("--identity".into());
@@ -251,6 +345,44 @@ pub async fn clone_repo(
         pump_pty(exe, &args_for_thread, cwd_for_thread, tx)
     });
 
+    // Measure bytes on disk on a timer, and let *that* drive the byte count, rate and percent —
+    // not lore's bar, which counts only completed files and so undercounts badly (see
+    // `worktree_bytes`). The bar still supplies the total and the file counts below; this only
+    // takes over the "how much has arrived" number. Stops when the pump loop ends.
+    let sampler_stop = Arc::new(AtomicBool::new(false));
+    let sampler = {
+        let app = app.clone();
+        let id = id.clone();
+        let dest_path = dest_path.clone();
+        let stop = sampler_stop.clone();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                emit(
+                    &app,
+                    CloneProgress {
+                        id: id.clone(),
+                        line: String::new(),
+                        // No percent: the frontend derives it from these bytes against the bar's
+                        // total, so there is one source of truth for "how far along".
+                        percent: None,
+                        bytes: Some(worktree_bytes(&dest_path)),
+                        total_bytes: None,
+                        files_done: None,
+                        files_total: None,
+                        files_growing: None,
+                        seconds: None,
+                        done: None,
+                        error: None,
+                    },
+                );
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(800)).await;
+            }
+        })
+    };
+
     let mut tail: Vec<String> = Vec::new();
     while let Some(PtyLine(line)) = rx.recv().await {
         let line = line.trim_end().to_string();
@@ -262,8 +394,12 @@ pub async fn clone_repo(
                     // The bar itself is redrawn constantly; showing it as a log line would
                     // scroll the useful output away. The numbers carry it instead.
                     line: String::new(),
-                    percent: frame.percent(),
-                    bytes: Some(frame.bytes_done),
+                    // Byte count and percent come from the disk sampler, not from here: the
+                    // bar's `bytes_done` counts only completed files and lags the truth by
+                    // gigabytes while big files are in flight. The bar's *total* and *file
+                    // counts*, though, are exactly right and are what the sampler cannot know.
+                    percent: None,
+                    bytes: None,
                     total_bytes: Some(frame.bytes_total),
                     files_done: Some(frame.files_done),
                     files_total: Some(frame.files_total),
@@ -278,6 +414,12 @@ pub async fn clone_repo(
         tail.push(line.clone());
         if tail.len() > 40 {
             tail.remove(0);
+        }
+        // Route the meaningful text lines (not the constantly-redrawn bar, which took the
+        // branch above and never reaches here) onto the shared console stream, so a clone
+        // narrates itself in the debug console the way commit/sync now do through `cmd::run`.
+        if !line.trim().is_empty() {
+            super::cmd::emit_line(&app, "clone", "out", line.trim());
         }
         emit(
             &app,
@@ -297,6 +439,12 @@ pub async fn clone_repo(
         );
     }
 
+    // The pump has ended, so the clone process has closed its pseudo-terminal: stop the disk
+    // sampler before reading the exit code, so it cannot emit a stray byte sample after the
+    // final `done`. It checks the flag once per loop, so this returns within one tick.
+    sampler_stop.store(true, Ordering::Relaxed);
+    let _ = sampler.await;
+
     let code = worker
         .await
         .map_err(|e| format!("The clone task failed ({e})."))??;
@@ -307,9 +455,44 @@ pub async fn clone_repo(
 
     let ok = code == 0;
     let error = (!ok).then(|| {
-        let why = tail.iter().rev().take(3).rev().cloned().collect::<Vec<_>>().join("\n");
+        // Strip ANSI, and drop the blank/erase-only lines it leaves behind. The tail is raw
+        // pseudo-terminal output — lore draws its progress bar with escape codes — so an
+        // untouched line reached the user as `…blob-500mb.bin␛[0m` with a stray `␛[2K` on its
+        // own line. `without_ansi` already exists for the progress parser; the error path
+        // simply never used it.
+        let why = tail
+            .iter()
+            .rev()
+            .take(3)
+            .rev()
+            .map(|l| without_ansi(l).trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
         if why.is_empty() {
             format!("The clone stopped unexpectedly (exit code {code}).")
+        } else {
+            why
+        }
+    });
+
+    // A clone that failed — a dropped network at 80%, most often — leaves a half-written
+    // directory with a `.lore/` in it. That is a dead end: `lore clone` has no resume, and
+    // `--force` will not reuse it (both verified), so a retry into the same folder is refused
+    // by lore *and* by the guard above, while `is_lore_repo` reports it valid and `open_repo`
+    // then fails with a cryptic "Repository not found". The only escape was deleting the folder
+    // by hand, which the app never mentioned. So the partial download is removed here, and the
+    // error says so, turning a dead end into a one-press retry.
+    //
+    // Scoped precisely: only what the clone wrote. If we created the folder, the whole thing
+    // goes; if the user pointed us at an empty folder they made, its *contents* go but the
+    // folder stays — we never delete a directory the user chose.
+    let error = error.map(|why| {
+        let removed = clean_up_partial(&dest_path, dest_preexisted);
+        if removed {
+            format!(
+                "{why}\n\nThe interrupted download has been removed. Press Clone to try again."
+            )
         } else {
             why
         }
@@ -485,6 +668,35 @@ fn which_on_path(name: &str) -> Option<std::path::PathBuf> {
 mod tests {
     use super::percent_of;
 
+    #[cfg(unix)]
+    #[test]
+    fn worktree_counts_written_blocks_not_preallocated_length() {
+        // The b12 clone bug, pinned: lore preallocates each incoming file to its final size as
+        // a sparse `.~loretemp`, so `len()` reports the full size while almost nothing is
+        // written. Summing `len()` snapped the progress counter to the repo's total the instant
+        // the files appeared (8.9 GB shown against 1.1 GB on disk). `worktree_bytes` must count
+        // the blocks actually written instead.
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("bigfiles")).unwrap();
+        let path = root.join("bigfiles/x.bin.~loretemp");
+        let f = std::fs::File::create(&path).unwrap();
+        f.set_len(200 * 1024 * 1024).unwrap(); // 200 MB logical, sparse
+        drop(f);
+        // Write only a little real data.
+        let mut w = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        w.write_all(&[7u8; 64 * 1024]).unwrap();
+        w.flush().unwrap();
+        drop(w);
+
+        let bytes = super::worktree_bytes(root);
+        assert!(
+            bytes < 8 * 1024 * 1024,
+            "counted {bytes} bytes — expected the written blocks (~KB), not the 200 MB preallocation"
+        );
+    }
+
     #[test]
     fn reads_a_percentage_when_one_is_printed() {
         assert_eq!(percent_of("Downloading 42% ..."), Some(42.0));
@@ -511,6 +723,22 @@ mod tests {
         assert_eq!(percent_of("Cloning into /work/demo"), None);
         assert_eq!(percent_of(""), None);
         assert_eq!(percent_of("50 percent"), None);
+    }
+
+    #[test]
+    fn percent_of_survives_a_multibyte_char_before_the_number() {
+        // B3, found by fuzzing: `percent_of` runs on every PTY line during a clone, and lore
+        // echoes paths. A repository or folder with an accented character — `Café/`, an `é`
+        // in a filename — produced a line where the byte index of the char before the digits
+        // landed inside a multibyte sequence. `head[start..]` then panicked with "byte index
+        // is not a char boundary", killing the clone reader thread and hanging the clone with
+        // the button stuck on "Cloning…". Same failure shape as the ConPTY hang, from data.
+        assert_eq!(percent_of("é50%"), Some(50.0));
+        assert_eq!(percent_of("Café 73.5%"), Some(73.5));
+        assert_eq!(percent_of("progreß 100%"), Some(100.0));
+        // A bare multibyte with no number is a clean None, not a crash.
+        assert_eq!(percent_of("é%"), None);
+        assert_eq!(percent_of("→%"), None);
     }
 }
 
@@ -743,5 +971,79 @@ mod pty_tests {
         let (code, _) = run_with_deadline(args)
             .expect("pump_pty did not return for a failing command");
         assert_eq!(code, 3);
+    }
+
+    // --- cleaning up a failed clone (B5) --------------------------------------
+
+    use super::clean_up_partial;
+    use std::fs;
+
+    /// A directory that looks like an interrupted clone: a .lore plus some downloaded content.
+    fn partial_clone(root: &std::path::Path) {
+        fs::create_dir_all(root.join(".lore")).unwrap();
+        fs::write(root.join(".lore/config.toml"), "remote_url = \"grpc://h:1\"").unwrap();
+        fs::create_dir_all(root.join("art")).unwrap();
+        fs::write(root.join("art/asset.bin"), vec![0u8; 1024]).unwrap();
+    }
+
+    #[test]
+    fn a_folder_the_clone_created_is_removed_whole() {
+        // The common case: the user typed a new folder name, the clone made it, the network
+        // dropped. The whole directory is ours and goes.
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("new-clone");
+        partial_clone(&dest);
+
+        assert!(clean_up_partial(&dest, false), "should report it removed something");
+        assert!(!dest.exists(), "a folder we created must be gone entirely");
+    }
+
+    #[test]
+    fn an_empty_folder_the_user_made_is_emptied_but_kept() {
+        // The user made an empty folder and pointed the clone at it. We must not delete the
+        // folder itself — its name and place are the user's — only what we wrote into it.
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("my-folder");
+        fs::create_dir(&dest).unwrap();
+        partial_clone(&dest);
+
+        assert!(clean_up_partial(&dest, true), "should report it removed something");
+        assert!(dest.exists(), "the user's folder must remain");
+        assert_eq!(fs::read_dir(&dest).unwrap().count(), 0, "but it must be empty again");
+    }
+
+    #[test]
+    fn a_directory_without_a_dot_lore_is_never_touched() {
+        // The safety refusal: no .lore means lore failed before writing anything of ours, so
+        // there is nothing to clean and we must not act on a state we do not recognise. This
+        // is what stops a mistyped dest, or a user directory that merely failed our own guard,
+        // from being deleted.
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("not-a-clone");
+        fs::create_dir(&dest).unwrap();
+        fs::write(dest.join("important.txt"), "the user's file").unwrap();
+
+        assert!(!clean_up_partial(&dest, false), "no .lore -> nothing removed");
+        assert!(dest.join("important.txt").exists(), "the user's file must survive");
+    }
+
+    #[test]
+    fn ansi_escapes_do_not_leak_into_the_error_lines() {
+        // B6, reported from the live B5 test: the clone error showed
+        //   Failed to clone file .../blob-500mb.bin\u{1b}[0m
+        // with a stray \u{1b}[2K on its own line. The error tail is raw PTY output; it must be
+        // run through without_ansi like every other line the terminal produces.
+        let raw = "Failed to clone file /work/blob.bin\u{1b}[0m";
+        assert_eq!(super::without_ansi(raw), "Failed to clone file /work/blob.bin");
+        // An erase-line escape leaves nothing once stripped, so it must not become a blank line.
+        assert_eq!(super::without_ansi("\u{1b}[2K").trim(), "");
+    }
+
+    #[test]
+    fn a_missing_destination_is_a_no_op_not_a_panic() {
+        // A clone that failed before creating anything: nothing on disk, nothing to do.
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("never-created");
+        assert!(!clean_up_partial(&dest, false));
     }
 }
