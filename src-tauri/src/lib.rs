@@ -20,7 +20,7 @@ pub fn run() {
         // in the backend, where user input never becomes a command line by accident.
         .plugin(tauri_plugin_shell::init())
         .manage(Registry::default())
-        .setup(|app| {
+        .setup(|_app| {
             // Before anything else: clear out tunnels a previous run left behind. They hold
             // the local ports this run needs and squat the same coordinator sessions, so
             // starting up beside them produces failures that look like network problems.

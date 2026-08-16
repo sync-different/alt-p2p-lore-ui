@@ -73,7 +73,7 @@ export function Console({
     () => mergeFeed(notices, traces, filter, debugEnabled, 500, tunnel, output),
     [notices, traces, filter, debugEnabled, tunnel, output],
   );
-  const problems = problemCount(notices, traces, debugEnabled, tunnel);
+  const problems = problemCount(notices, traces, debugEnabled, tunnel, output);
 
   // Dragging the top edge. Listeners live on the window, not the handle, so the pointer may
   // leave the 4px strip mid-drag without the resize stopping dead.

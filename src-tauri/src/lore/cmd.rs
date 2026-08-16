@@ -38,19 +38,6 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 /// rather than on wall-clock — which would also give them the progress feedback they lack.
 pub const DATA_TRANSFER_TIMEOUT: Duration = Duration::from_secs(3600);
 
-/// Deadline for a read the user is waiting on.
-///
-/// The default is sized for operations that move data; a *read* inheriting it means a host
-/// that has stopped answering takes two minutes to say so, per call. Observed against a
-/// machine that went to sleep: `lore status --scan` at 22.4s, 19.2s and 10.3s in a row, and
-/// only the app's own guard now stops those adding up — the ceiling was never reached because
-/// the host was refusing rather than hanging. A hung one would have taken the full 120s each.
-///
-/// Twenty seconds is far above what these cost when they work: a status scan of the 2 GiB
-/// reference repository is 225ms cold and 83ms warm. It exists to end a wait, not to police
-/// latency, so it is set where no working host could plausibly land.
-pub const INTERACTIVE_TIMEOUT: Duration = Duration::from_secs(20);
-
 /// Deadline for a read that needs the host and has nothing local to fall back on.
 ///
 /// Locks are the case: `lore` gives up on its own at about ten seconds with "Disconnected
@@ -222,7 +209,7 @@ pub async fn run(
     // commit or sync that moves gigabytes is then legible *while* it runs, one line at a time,
     // instead of appearing frozen and then dumping everything at the end. The full output is
     // still accumulated for the return value, the error, and the one-line trace.
-    let (mut rx, mut child) = match cmd.spawn() {
+    let (mut rx, child) = match cmd.spawn() {
         Ok(pair) => pair,
         Err(e) => {
             let e = LoreError::Spawn(e.to_string());
@@ -399,14 +386,10 @@ mod tests {
 
     #[test]
     fn a_read_never_waits_as_long_as_a_transfer() {
-        // The point of having three: a host that stops answering must not cost two minutes
-        // per read. Written as an ordering rather than as exact numbers, so tuning stays
-        // possible while the relationship that matters is pinned.
-        assert!(super::HOST_READ_TIMEOUT < super::INTERACTIVE_TIMEOUT);
-        assert!(super::INTERACTIVE_TIMEOUT < super::DEFAULT_TIMEOUT);
-        // Comfortably above a working host: a status scan of the 2 GiB reference repository
-        // is 225ms cold. A deadline near that would fail on an ordinary slow moment.
-        assert!(super::INTERACTIVE_TIMEOUT.as_secs() >= 10);
+        // The point of the tiers: a host that stops answering must not cost two minutes per
+        // read. Written as an ordering rather than as exact numbers, so tuning stays possible
+        // while the relationship that matters is pinned.
+        assert!(super::HOST_READ_TIMEOUT < super::DEFAULT_TIMEOUT);
         // A data transfer (commit/sync) is the longest of all — it moves gigabytes and must
         // outrun the 120s default, which failed a legitimate large sync mid-progress (B7).
         assert!(super::DATA_TRANSFER_TIMEOUT > super::DEFAULT_TIMEOUT);

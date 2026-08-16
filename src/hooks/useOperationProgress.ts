@@ -10,7 +10,7 @@ import { listen } from "@tauri-apps/api/event";
 export interface OperationProgress {
   /** Working-copy path, so two operations at once cannot be confused. */
   path: string;
-  op: "sync" | "commit" | "reset" | "switch" | "abort" | "resolve" | "scan";
+  op: "sync" | "commit" | "reset" | "switch" | "abort" | "resolve";
   /** Bytes on disk in the working copy. Grows through a sync; roughly flat through a commit. */
   bytes: number;
   /** `.~loretemp` files in flight — files being written but not yet renamed into place. */
@@ -25,7 +25,7 @@ export interface OperationProgress {
  * the change between samples (the backend reports no rate; the CLI reports nothing at all).
  */
 export interface OperationView {
-  op: "sync" | "commit" | "reset" | "switch" | "abort" | "resolve" | "scan";
+  op: "sync" | "commit" | "reset" | "switch" | "abort" | "resolve";
   /** Total working-copy bytes on disk right now (includes files already present before sync). */
   bytes: number;
   /**
@@ -52,7 +52,7 @@ export interface OperationView {
  */
 export function useOperationProgress(
   path: string | undefined,
-  op: "sync" | "commit" | "reset" | "switch" | "abort" | "resolve" | "scan",
+  op: "sync" | "commit" | "reset" | "switch" | "abort" | "resolve",
 ): OperationView | null {
   const [view, setView] = useState<OperationView | null>(null);
   // Working-copy size at the first sample of THIS operation — the floor "received" grows from.
@@ -102,7 +102,7 @@ export function useOperationProgress(
       // and out. received/elapsed is always a number once data has moved — it drifts down
       // honestly during a stall rather than blinking. Commit (flat bytes) stays null.
       const rate =
-        op !== "commit" && op !== "scan" && received > 0 && elapsedSeconds > 0.5 ? received / elapsedSeconds : null;
+        op !== "commit" && received > 0 && elapsedSeconds > 0.5 ? received / elapsedSeconds : null;
 
       setView({ op: p.op, bytes, received, tempFiles: p.temp_files, elapsedSeconds, rate });
     });

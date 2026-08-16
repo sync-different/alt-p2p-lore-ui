@@ -96,6 +96,15 @@ describe("lore command output", () => {
     expect(outputColour(out("l1", 1, "out"))).toContain("ink-2");
   });
 
+  it("counts its stderr lines in the Problems badge — the badge must match the filter", () => {
+    // mergeFeed's Problems view shows output stderr lines; a badge that says 0 while the list
+    // it advertises shows a row is the inconsistency this pins.
+    const lines = [out("l1", 1, "out"), out("l2", 2, "err", "warning: slow host")];
+    expect(problemCount([], [], true, [], lines)).toBe(1);
+    // Debug off: streamed output is hidden, so it must not count either.
+    expect(problemCount([], [], false, [], lines)).toBe(0);
+  });
+
   it("does not treat an ordinary stderr line as a failure", () => {
     // Java logs progress to stderr. Colouring the stream rather than the level would paint a
     // healthy connection red from end to end.

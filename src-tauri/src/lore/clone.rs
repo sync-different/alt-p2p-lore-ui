@@ -418,8 +418,12 @@ pub async fn clone_repo(
         // Route the meaningful text lines (not the constantly-redrawn bar, which took the
         // branch above and never reaches here) onto the shared console stream, so a clone
         // narrates itself in the debug console the way commit/sync now do through `cmd::run`.
-        if !line.trim().is_empty() {
-            super::cmd::emit_line(&app, "clone", "out", line.trim());
+        // Stripped of ANSI first: this is raw pseudo-terminal output, and the closing lines
+        // carry erase codes — the same `␛[2K` leak the error tail already had to fix. A line
+        // that is *only* an erase code becomes empty here and is rightly dropped.
+        let plain = without_ansi(&line);
+        if !plain.trim().is_empty() {
+            super::cmd::emit_line(&app, "clone", "out", plain.trim());
         }
         emit(
             &app,

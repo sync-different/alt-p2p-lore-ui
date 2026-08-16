@@ -183,10 +183,16 @@ export function problemCount(
   traces: TraceLine[],
   debugEnabled: boolean,
   tunnel: TunnelLine[] = [],
+  output: OutputLine[] = [],
 ): number {
   const bad = notices.filter((n) => n.level === "warn" || n.level === "error").length;
   if (!debugEnabled) return bad;
+  // Counts exactly what the Problems filter in mergeFeed shows — a badge that disagrees with
+  // the list it advertises is worse than no badge.
   return (
-    bad + traces.filter((t) => !t.ok).length + tunnel.filter((t) => t.level === "error").length
+    bad +
+    traces.filter((t) => !t.ok).length +
+    tunnel.filter((t) => t.level === "error").length +
+    output.filter((o) => o.stream === "err").length
   );
 }
