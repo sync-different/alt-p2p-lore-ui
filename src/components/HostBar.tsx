@@ -3,6 +3,7 @@ import type { TunnelInfo } from "../hooks/useTunnels";
 import { phaseToStatus } from "../hooks/useTunnels";
 import type { SessionStatus } from "../types/app";
 import { probeLabel, probeStatus, type HostProbe } from "../lib/hosts";
+import { ArrowScroller } from "./ArrowScroller";
 
 /**
  * The hosts this app can connect to, and which of them is carrying traffic.
@@ -67,6 +68,10 @@ export function HostBar({
         <span className="text-ink-2">No hosts yet — add the details your host gave you.</span>
       )}
 
+      {/* Hosts scroll like the workspace tabs below them (same ArrowScroller, same reason: a
+          row that grows with user data must not push its tail off the screen). The + Host
+          button and the sign-in badge stay pinned outside. */}
+      <ArrowScroller className="gap-3">
       {hosts.map((h) => {
         // A direct host has nothing to connect: it is an address that either answers or does
         // not, and finding out is the job of the next operation rather than a button.
@@ -77,7 +82,7 @@ export function HostBar({
         const live = status === "connected" || status === "relay";
         const busy = status === "connecting";
         return (
-          <span key={h.id} className="flex items-center gap-1.5">
+          <span key={h.id} className="flex shrink-0 items-center gap-1.5">
             <span className={`h-2 w-2 shrink-0 rounded-full ${DOT[status]}`} aria-hidden />
             <span
               className="text-ink-1"
@@ -114,10 +119,11 @@ export function HostBar({
           </span>
         );
       })}
+      </ArrowScroller>
 
       <button
         onClick={onAdd}
-        className="rounded border border-line px-1.5 py-0.5 text-[11px] text-ink-2 hover:bg-surface-2 hover:text-ink-0"
+        className="shrink-0 rounded border border-line px-1.5 py-0.5 text-[11px] text-ink-2 hover:bg-surface-2 hover:text-ink-0"
         title="Add a host"
       >
         + Host
