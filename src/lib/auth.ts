@@ -190,6 +190,26 @@ export function looksLikeMissingIdentity(text: string): boolean {
 }
 
 /**
+ * lore's wording when the token exchange with the host's identity service fails at the
+ * transport — which, on a private-CA host, is almost always this machine not trusting that CA.
+ *
+ * Observed live (ctone, 2026-08-16): every operation failed with
+ * `failed to connect to auth endpoint: transport error … authorization failure`, while the
+ * tunnel was up, the loreserver answered, and TLS to the endpoint completed for a probe that
+ * supplied the CA. Nothing in the words says "certificate", which is exactly why this needs
+ * translating: the fix is a one-time trust-store import, and the raw error sends people to
+ * check the network instead.
+ *
+ * Anchored on the auth-endpoint phrasing, not on "transport error" alone — a bare transport
+ * error genuinely can mean an unreachable host, and that path must keep its own translation.
+ * ("Auth exchange failed" is the same failure as `--log-level debug` words it.)
+ */
+export function looksLikeUntrustedCa(text: string): boolean {
+  const t = text.toLowerCase();
+  return t.includes("failed to connect to auth endpoint") || t.includes("auth exchange failed");
+}
+
+/**
  * The loopback port in an auth URL — which host's store an identity belongs to.
  *
  * Identities are filed per auth URL (I2/I3 in MODEL.md), so "is this user signed in?" is only
@@ -267,6 +287,20 @@ export function explainError(
   /** What this repository is pinned to act as, if anything. */
   repoIdentity?: string | null,
 ): Explained {
+  // The most specific signature goes first. This one also *must* beat the generic paths:
+  // its words contain "failed to connect", so left to fall through it reads as a network
+  // problem — and it armed the retry-when-the-host-returns logic, which can never help a
+  // trust failure (see looksUnreachable, which now excludes it for the same reason).
+  if (looksLikeUntrustedCa(raw)) {
+    return {
+      message:
+        "This machine does not trust the host's identity certificate, so signing requests fail. " +
+        "Ask whoever runs the host for their CA certificate and add it to this computer's trust " +
+        "store (their setup notes show how), then try again. If it is already trusted, the " +
+        "host's identity service may be down.",
+      detail: raw,
+    };
+  }
   // Checked before the auth cases: a lock message can mention a user, and reading it as an
   // identity problem would send someone to sign in over a colleague's open file.
   if (looksLikeLockFailure(raw)) {

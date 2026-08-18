@@ -19,6 +19,8 @@
  * host reached directly has a hostname, and that is what distinguishes it.
  */
 
+import { looksLikeUntrustedCa } from "./auth";
+
 /**
  * A host that could serve a working copy, whatever the transport.
  *
@@ -113,6 +115,12 @@ const UNREACHABLE = [
 ];
 
 export function looksUnreachable(text: string): boolean {
+  // An untrusted-CA failure *contains* "transport error" and "failed to connect", but the host
+  // answered — TLS verification failed on our side. Treating it as unreachable misfiled it two
+  // ways at once: the message blamed the network, and a failed write was remembered as "worth
+  // raising when the host returns", which a trust failure never earns — retry cannot help until
+  // the CA is imported. Most specific reading wins.
+  if (looksLikeUntrustedCa(text)) return false;
   const t = text.toLowerCase();
   return UNREACHABLE.some((s) => t.includes(s));
 }

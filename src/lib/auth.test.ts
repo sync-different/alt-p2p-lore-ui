@@ -8,6 +8,7 @@ import {
   expiryLabel,
   expiryTone,
   explainError,
+  looksLikeUntrustedCa,
   humanDuration,
   looksLikeAuthFailure,
   needsSignIn,
@@ -358,5 +359,34 @@ describe("accountsAt", () => {
 
   it("ignores resource-scoped entries, which are not sign-ins", () => {
     expect(accountsAt(all, "https://127.0.0.1:9443").filter((a) => a.id === "u-87c4")).toHaveLength(1);
+  });
+});
+
+describe("the untrusted-CA failure is told, not relayed", () => {
+  // The signature exactly as ctone produced it live (2026-08-16), when this machine had not
+  // yet trusted the host's private CA. Everything visible said "network": the words contain
+  // "failed to connect" and "transport error", the tunnel was green, and the raw text reached
+  // the screen. The fix is a one-time trust-store import, and the message must say so.
+  const live =
+    "[Error] Failed to connect to remote grpc://127.0.0.1:41400: failed to connect to auth endpoint: transport error\n" +
+    "  at lore-transport/src/auth/exchange.rs:31 - Failed to exchange token\n" +
+    "  at lore-transport/src/connection.rs:295 - authorization failure";
+
+  it("recognises the live signature and names the certificate, not the network", () => {
+    expect(looksLikeUntrustedCa(live)).toBe(true);
+    const { message, detail } = explainError(live);
+    expect(message).toMatch(/does not trust the host's identity certificate/i);
+    expect(message).toMatch(/CA certificate/);
+    expect(detail).toBe(live);
+  });
+
+  it("also recognises the debug-log phrasing", () => {
+    expect(looksLikeUntrustedCa("Auth exchange failed … failed to connect to auth endpoint")).toBe(true);
+  });
+
+  it("does NOT claim a certificate problem for a bare transport error", () => {
+    // A host that is genuinely down produces "transport error" without the auth-endpoint
+    // anchor. Blaming the certificate there would send someone importing CAs at a dead host.
+    expect(looksLikeUntrustedCa("[Error] Disconnected from server: transport error")).toBe(false);
   });
 });

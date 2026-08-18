@@ -119,3 +119,13 @@ describe("explainUnreachable", () => {
     expect(looksUnreachable("Not found")).toBe(false);
   });
 });
+
+describe("an untrusted-CA failure is not 'unreachable'", () => {
+  it("keeps the CA signature out of the unreachable bucket, so retry-on-return never arms", () => {
+    const ca =
+      "[Error] Failed to connect to remote grpc://127.0.0.1:41400: failed to connect to auth endpoint: transport error";
+    expect(looksUnreachable(ca)).toBe(false);
+    // …while a bare transport error stays what it always was.
+    expect(looksUnreachable("[Error] Disconnected from server: transport error")).toBe(true);
+  });
+});
