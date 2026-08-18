@@ -107,9 +107,29 @@ fi
 # already required above for the target triple, so this adds no new prerequisite.
 RUNJAVA_DEST="$BIN_DIR/run-java-$TRIPLE$EXE"
 if [ "$IS_WINDOWS" = "1" ]; then
-  rustc -O --edition 2021 -o "$RUNJAVA_DEST" "$ROOT/src-tauri/scripts/run-java.rs" \
+  # `+crt-static` is load-bearing, not a nicety.
+  #
+  # Rust's MSVC target links the C runtime dynamically by default, which made this binary
+  # import **VCRUNTIME140.dll** — part of the Visual C++ Redistributable, which a developer
+  # machine has and a **fresh Windows 11 does not**. The installed app then died on
+  # "The code execution cannot proceed because VCRUNTIME140.dll was not found", and because
+  # `run-java` *is* the program `prereq.rs` probes, both Alterante P2P and the Java runtime
+  # reported "not reached" — one missing DLL presenting as two unrelated failures.
+  #
+  # Static linking removes the dependency outright, so nothing has to be installed alongside
+  # the app. Neither of the other bundled executables needs this: `lore.exe` ships statically
+  # linked already, and the Tauri binary imports only the Universal CRT (`api-ms-win-crt-*`),
+  # which is part of Windows itself.
+  #
+  # Verify after changing this, on the binary rather than by reasoning:
+  #   dumpbin /dependents binaries\run-java-<triple>.exe   # must list no VCRUNTIME140.dll
+  rustc -O --edition 2021 -C target-feature=+crt-static \
+    -o "$RUNJAVA_DEST" "$ROOT/src-tauri/scripts/run-java.rs" \
     || fail "could not compile src-tauri/scripts/run-java.rs"
-  say "run-java -> binaries/run-java-$TRIPLE$EXE   (compiled from run-java.rs)"
+  say "run-java -> binaries/run-java-$TRIPLE$EXE   (compiled from run-java.rs, static CRT)"
+
+  # Left unsigned on purpose. Tauri signs it during `tauri build` via `signCommand`; `tauri dev`
+  # never signs, and does not need to.
 else
   cp -f "$ROOT/src-tauri/scripts/run-java.sh" "$RUNJAVA_DEST"
   chmod +x "$RUNJAVA_DEST"

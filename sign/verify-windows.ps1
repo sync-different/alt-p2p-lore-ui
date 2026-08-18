@@ -83,6 +83,36 @@ if ($msi) {
   } else {
     $app = Join-Path $out "PFiles\alt-lore Desktop"
     foreach ($n in "alt-p2p-lore-ui.exe", "run-java.exe", "lore.exe") { Show $n (Join-Path $app $n) }
+
+    # Signed is not the same as runnable.
+    #
+    # A correctly signed run-java.exe once shipped importing VCRUNTIME140.dll - part of the
+    # Visual C++ Redistributable, which every developer machine has and a fresh Windows 11
+    # does not. The installed app died on "VCRUNTIME140.dll was not found", and since
+    # run-java is what prereq.rs probes, it surfaced as two unrelated-looking failures.
+    # Nothing in a signature check would ever have caught it.
+    #
+    # The Universal CRT (api-ms-win-crt-*) is fine: it is part of Windows 10 and 11.
+    Write-Output ""
+    Write-Output "=== redistributable dependencies (must be none) ==="
+    $dumpbin = Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -Recurse -Filter dumpbin.exe -ErrorAction SilentlyContinue |
+      Where-Object { $_.FullName -match '\\Hostx64\\x64\\' } | Select-Object -First 1
+    if (-not $dumpbin) {
+      Write-Output "  dumpbin not found - dependency check SKIPPED (install VS Build Tools to enable)"
+    } else {
+      foreach ($n in "alt-p2p-lore-ui.exe", "run-java.exe", "lore.exe") {
+        $p = Join-Path $app $n
+        if (-not (Test-Path $p)) { continue }
+        $deps = & $dumpbin.FullName /dependents $p 2>$null
+        $needs = $deps | Select-String -Pattern 'VCRUNTIME|MSVCP\d|MSVCR\d' | ForEach-Object { $_.ToString().Trim() }
+        if ($needs) {
+          Write-Output ("  {0,-24} NEEDS REDIST: {1}" -f $n, ($needs -join ', '))
+          $script:bad++
+        } else {
+          Write-Output ("  {0,-24} clean" -f $n)
+        }
+      }
+    }
   }
 }
 
