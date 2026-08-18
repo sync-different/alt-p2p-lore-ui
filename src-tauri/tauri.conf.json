@@ -33,7 +33,9 @@
     "resources": {
       "resources/alt-p2p-lore.jar": "alt-p2p-lore.jar",
       "resources/deps-manifest.json": "deps-manifest.json",
-      "resources/jre/": "jre/"
+      "resources/jre/": "jre/",
+      "licenses/LORE-LICENSE.txt": "LORE-LICENSE.txt",
+      "licenses/THIRD-PARTY-NOTICES.txt": "THIRD-PARTY-NOTICES.txt"
     },
     "icon": [
       "icons/32x32.png",

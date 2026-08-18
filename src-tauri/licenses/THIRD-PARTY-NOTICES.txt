@@ -1,0 +1,23 @@
+alt-lore Desktop — third-party notices
+======================================
+
+This application bundles the following third-party software:
+
+1. Lore (the `lore` command-line tool)
+   Copyright (c) 2026 Epic Games, Inc. — MIT License (see LORE-LICENSE.txt)
+   https://github.com/EpicGames/lore
+   "Lore" and "Epic Games" are trademarks of Epic Games, Inc. This is an
+   independent project, not affiliated with or endorsed by Epic Games; the
+   marks are used only to describe interoperability.
+
+2. alt-p2p-lore and alt-p2p (the peer-to-peer tunnel, alt-p2p-lore.jar)
+   Copyright (c) Alterante Inc. — GNU AGPL v3
+   https://github.com/sync-different/alt-p2p-lore
+   https://github.com/sync-different/alt-p2p
+   The jar additionally contains shaded dependencies (including Bouncy Castle,
+   MIT-style license) — see the NOTICE files inside the jar for details.
+
+3. OpenJDK runtime (the bundled `jre/`, produced with jlink)
+   GPL v2 with the Classpath Exception — https://openjdk.org/legal/gplv2+ce.html
+
+alt-lore Desktop itself is licensed under the GNU AGPL v3.
