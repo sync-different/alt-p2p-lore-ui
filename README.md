@@ -8,6 +8,10 @@ Built for artists and developers rather than operators. It is a front end for tw
 bundles: the **`lore`** CLI, and the **[alt-p2p-lore](https://github.com/sync-different/alt-p2p-lore)**
 tunnel it can use to carry it. You install one app; there is nothing else to set up.
 
+<p align="center">
+  <img src="docs/alt-lore-desktop.png" alt="alt-lore Desktop — hosts of both kinds, workspace tabs with their identities, an asset previewed in the tree, and the console streaming lore commands" width="820">
+</p>
+
 ## What it does
 
 - **Hosts** — reach a machine running loreserver either **peer-to-peer**, through an
@@ -38,8 +42,19 @@ tunnel it can use to carry it. You install one app; there is nothing else to set
 
 ## Install
 
-Download the `.dmg` (or build one below) and drag the app across. Nothing else is required:
-`lore`, the tunnel and a Java runtime are all inside the bundle.
+Grab the installer for your platform from [Releases](../../releases) — or build one yourself,
+below.
+
+**macOS** (Apple Silicon) — open `alt-lore-desktop_<version>_aarch64.dmg` and drag the app to
+Applications. The app is signed and notarized, so it opens without warnings.
+
+**Windows** (10/11, x64) — run the `-setup.exe` installer. Builds are signed by
+Alterante, Inc. — while the
+certificate is new, SmartScreen may still show "unrecognized app"; choose **More info → Run
+anyway**.
+
+There is no Linux build yet. On either platform nothing else is required: `lore`, the tunnel
+and a Java runtime are all inside the bundle.
 
 Under **+ Host** you choose how to reach it.
 
