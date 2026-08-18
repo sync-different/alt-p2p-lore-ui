@@ -48,8 +48,8 @@ below.
 **macOS** (Apple Silicon) — open `alt-lore-desktop_<version>_aarch64.dmg` and drag the app to
 Applications. The app is signed and notarized, so it opens without warnings.
 
-**Windows** (10/11, x64) — run the `.msi`, or the `-setup.exe` if you prefer the NSIS
-installer; they install the same thing. Builds are signed by Alterante, Inc. — while the
+**Windows** (10/11, x64) — run the `-setup.exe` installer. Builds are signed by
+Alterante, Inc. — while the
 certificate is new, SmartScreen may still show "unrecognized app"; choose **More info → Run
 anyway**.
 
