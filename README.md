@@ -42,8 +42,19 @@ tunnel it can use to carry it. You install one app; there is nothing else to set
 
 ## Install
 
-Download the `.dmg` (or build one below) and drag the app across. Nothing else is required:
-`lore`, the tunnel and a Java runtime are all inside the bundle.
+Grab the installer for your platform from [Releases](../../releases) — or build one yourself,
+below.
+
+**macOS** (Apple Silicon) — open `alt-lore-desktop_<version>_aarch64.dmg` and drag the app to
+Applications. The app is signed and notarized, so it opens without warnings.
+
+**Windows** (10/11, x64) — run the `.msi`, or the `-setup.exe` if you prefer the NSIS
+installer; they install the same thing. Builds are signed by Alterante, Inc. — while the
+certificate is new, SmartScreen may still show "unrecognized app"; choose **More info → Run
+anyway**.
+
+There is no Linux build yet. On either platform nothing else is required: `lore`, the tunnel
+and a Java runtime are all inside the bundle.
 
 Under **+ Host** you choose how to reach it.
 
