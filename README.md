@@ -8,6 +8,10 @@ Built for artists and developers rather than operators. It is a front end for tw
 bundles: the **`lore`** CLI, and the **[alt-p2p-lore](https://github.com/sync-different/alt-p2p-lore)**
 tunnel it can use to carry it. You install one app; there is nothing else to set up.
 
+<p align="center">
+  <img src="docs/alt-lore-desktop.png" alt="alt-lore Desktop — hosts of both kinds, workspace tabs with their identities, an asset previewed in the tree, and the console streaming lore commands" width="820">
+</p>
+
 ## What it does
 
 - **Hosts** — reach a machine running loreserver either **peer-to-peer**, through an
