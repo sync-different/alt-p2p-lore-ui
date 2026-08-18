@@ -675,10 +675,20 @@ export function useRepository(onEvent?: OnEvent) {
         // `lore branch list`, so a new branch is invisible until that runs again — which is
         // exactly what "I created it and the dropdown still shows main" looks like.
         await open(info.path);
-        // Creating does not switch, and saying otherwise would be a lie the user acts on.
+        // `lore branch create` **switches**, and this said it did not.
+        //
+        // Verified on 0.8.6+373: `On branch win-parity` before, `On branch repro-1` after, with
+        // the app issuing nothing but `branch create`. The old wording ("You are still on main")
+        // was contradicted by the app's own re-read one line above — the dropdown had already
+        // moved — so the screen showed the truth and the notice denied it in the same breath.
+        //
+        // It is safe, which is why it went unnoticed: the branch is created at the *current*
+        // revision, so the switch materialises nothing and uncommitted work survives (checked
+        // with a modified file in the tree). The cost was purely a wrong mental model, which is
+        // the kind this codebase is meant not to hand out.
         onEvent?.(
           "success",
-          `Created ${branch} — on this machine only, until it is pushed. You are still on ${info.status.branch ?? "this branch"}.`,
+          `Created ${branch} and switched to it — on this machine only, until it is pushed.`,
         );
       } catch (e) {
         onEvent?.("error", explainError(String(e)).message);

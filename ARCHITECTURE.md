@@ -84,6 +84,16 @@ otherwise-odd choices. Each was verified against a live host.
    depending on which workspace asks, so ownership is resolved by the server rather than compared
    locally — and where it cannot be established it stays *unknown*, which is treated as somebody
    else's.
+6. **The CLI's words are not a specification.** Two of its verbs mean the opposite of what they
+   say to a person at the keyboard: `branch merge resolve mine` keeps the **host's** side, because
+   the merge machinery has already moved the working copy onto the incoming revision; and
+   `branch create` **switches** to the branch it creates. Both were established by watching a
+   working copy before and after, and both had shipped with the obvious reading — one of them
+   discarding a user's work while announcing it was kept.
+
+The sixth is the one that generalises: every place this app translates the CLI's behaviour into a
+sentence, that sentence is a claim about a program we do not own, and the only way to hold it true
+is to have watched it. Where a claim cannot be checked, the app says less rather than guessing.
 
 Consequently:
 

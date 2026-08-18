@@ -569,8 +569,14 @@ pub async fn create_branch(app: AppHandle, path: String, branch: String) -> Resu
     )
     .await
     .map_err(to_message)?;
-    // Creating does not switch: lore leaves you where you were, and pretending otherwise
-    // would put someone on a branch they did not ask to be on.
+    // **Creating switches.** `lore branch create` leaves the working copy on the new branch —
+    // measured on 0.8.6+373, not assumed; this comment previously claimed the opposite and the
+    // UI repeated it to the user. Nothing is issued here to cause it, and nothing should be
+    // issued to undo it: the branch is created at the current revision, so the switch rewrites
+    // no files and uncommitted work is untouched.
+    //
+    // The status read below is therefore what tells the caller where they now are, and it must
+    // not be second-guessed by anything that "knows" create does not switch.
     read_status(&app, &cwd).await
 }
 

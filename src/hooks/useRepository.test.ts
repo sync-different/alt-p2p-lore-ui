@@ -16,6 +16,7 @@ const mockListLocks = vi.fn();
 const mockPush = vi.fn();
 const mockStage = vi.fn();
 const mockSync = vi.fn();
+const mockCreateBranch = vi.fn();
 
 vi.mock("../lib/repo", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/repo")>();
@@ -28,6 +29,7 @@ vi.mock("../lib/repo", async (importOriginal) => {
     pushRepo: (...a: unknown[]) => mockPush(...a),
     stagePaths: (...a: unknown[]) => mockStage(...a),
     syncRepo: (...a: unknown[]) => mockSync(...a),
+    createBranch: (...a: unknown[]) => mockCreateBranch(...a),
   };
 });
 
@@ -58,6 +60,7 @@ beforeEach(() => {
   mockPush.mockReset();
   mockStage.mockReset();
   mockSync.mockReset();
+  mockCreateBranch.mockReset();
 });
 
 async function openWith(rootEntries: ReturnType<typeof entry>[], identity?: string) {
@@ -687,4 +690,57 @@ describe("writes do not overlap (B2)", () => {
       expect(result.current.syncStuck).toBe(false);
     });
   });
+
+  describe("creating a branch", () => {
+    /**
+     * `lore branch create` switches, and this notice used to say it did not.
+     *
+     * Measured against lore 0.8.6+373 on Windows: the working copy read `On branch win-parity`
+     * before and `On branch repro-1` after, with the app issuing nothing but `branch create`.
+     * The old wording — "You are still on <branch>" — was contradicted by the hook's own
+     * re-read on the line above, so the dropdown showed the new branch while the message
+     * denied it in the same breath.
+     *
+     * Harmless in data terms, which is why it survived: the branch is created at the *current*
+     * revision, so the switch rewrites nothing and uncommitted work is untouched (confirmed
+     * with a modified file in the tree). What it handed out was a wrong mental model, and an
+     * error that names the wrong thing is the failure this codebase treats as serious.
+     *
+     * Asserted on the *last* success event, not the first. `newBranch` re-reads the repository
+     * before announcing anything, and that `open()` raises its own "Opened … at revision N" —
+     * so the first success is never the one under test. Two earlier versions of this test
+     * failed against correct code for exactly that reason.
+     */
+    it("says it switched, because lore does", async () => {
+      await openWith([entry("README.md")]);
+      mockCreateBranch.mockResolvedValue(undefined);
+      // The re-read after create reports the new branch — what lore actually leaves behind.
+      mockOpenRepo.mockResolvedValue({
+        path: "/repo",
+        status: { ...status(), branch: "feature-x" },
+        branches: { names: ["main", "feature-x"], current: "feature-x", remote_only: [] },
+        identity: null,
+      });
+
+      const events: Array<[string, string]> = [];
+      const hook = renderHook(() => useRepository((k, m) => events.push([k, m])));
+      await act(async () => {
+        await hook.result.current.open("/repo");
+      });
+      events.length = 0; // drop the open notice; only the create one is under test
+      await act(async () => {
+        await hook.result.current.newBranch("feature-x");
+      });
+
+      // Indexed rather than `.at(-1)`: the tsconfig target predates it, so vitest runs it
+      // happily under Node while `npm run build` fails the typecheck.
+      const successes = events.filter(([k]) => k === "success");
+      const notice = successes.length ? successes[successes.length - 1][1] : "";
+      expect(notice).toContain("feature-x");
+      expect(notice).toContain("switched to it");
+      // The specific untruth this test exists to keep out.
+      expect(notice).not.toMatch(/still on/i);
+    });
+  });
+
 });

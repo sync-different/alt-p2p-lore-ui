@@ -196,6 +196,26 @@ The first shipped mapping passed `mine` for "Keep my version", which silently di
 user's work while announcing it was kept. `resolve_side_arg` in `repo.rs` pins the corrected
 mapping with a test; do not "simplify" it back to the obvious words.
 
+### `lore branch create` switches, and the app used to deny it
+
+Measured on 0.8.6+373: `On branch win-parity` before, `On branch repro-1` after, with the app
+issuing nothing but `branch create`. Both the notice and a comment in `repo.rs` asserted the
+opposite ("You are still on …"), and the notice was contradicted by the app's *own* re-read one
+line above — `newBranch` calls `open()` before announcing, so the dropdown had already moved
+while the sentence underneath denied it. The old code's own test failure says it best:
+
+```
+"Created feature-x — on this machine only, until it is pushed. You are still on feature-x."
+```
+
+**It is safe, which is why it survived.** The branch is created at the *current* revision, so the
+switch materialises nothing and uncommitted work is untouched — confirmed with a modified file in
+the tree. What it handed out was a wrong mental model, which is the failure this codebase treats
+as serious. Do not "fix" it by switching back afterwards: report what lore does.
+
+Same shape as the merge-resolution inversion above, and the same lesson — **the words a CLI uses
+are not a specification.** Both were caught only by watching a working copy before and after.
+
 ### The console, and why traces are always recorded
 
 The bottom panel merges two streams: the app's own notices, and one line per `lore` process
@@ -298,11 +318,36 @@ This repository now has a remote (`sync-different/alt-p2p-lore-ui`), added to ge
 second machine. Note that a clone does **not** bring `internal/` (git-ignored plans) — copy that
 across separately, or work without it; nothing in the build depends on it.
 
-**Windows builds and runs.** `msi` and `nsis` bundles, and both suites green — **225 Rust, 353
-vitest**. The port itself changed no test and no parser: it reached macOS's 219 and 353 on the
-Cargo.toml fix alone, and the six extra Rust tests came later, with the bugs found by *running*
-the thing. What follows replaces the earlier list of predictions; where a prediction was wrong,
-the correction is the interesting part.
+**Windows builds and runs.** `msi` and `nsis` bundles, both suites green — currently **246 Rust
+(zero warnings), 376 vitest / 30 files**, the vitest count identical to macOS. The port itself
+changed no test and no parser: it reached macOS's counts on the Cargo.toml fix alone, and every
+extra test since came with a bug found by *running* the thing. What follows replaces the earlier
+list of predictions; where a prediction was wrong, the correction is the interesting part.
+
+### The sparse-file question: `len()` is fine, and I got this wrong first
+
+`on_disk_bytes` uses `blocks() * 512` on Unix and falls back to `len()` on Windows, with a note
+fearing that lore's sparse `.~loretemp` preallocation would make the counter snap to the total.
+**Measured, it does not, and no `GetCompressedFileSizeW` is needed.**
+
+- lore's `.~loretemp` files on NTFS are **not sparse** (`fsutil sparse queryflag`, against a
+  control that confirms detection works).
+- lore *does* preallocate each one to its final size — a partial file from a killed clone was
+  byte-identical in length to the completed one, with `ValidDataLength` **0**.
+- But the over-count is bounded by the **in-flight working set**, not the tree: lore preallocates
+  a few files, fills them, renames, moves on. A live 2.1 GiB clone over the tunnel showed the
+  counter climbing normally and finishing correct.
+
+**The mistake worth recording:** from the killed-clone leftovers I concluded the counter would
+snap, and said so confidently. What I had actually found was a snapshot of the *in-flight set at
+the moment I killed it* — I read a working set as steady state. The prediction was wrong and the
+live clone disproved it.
+
+One thing still unverified: the app reported **75 MB/s** on that clone, over a relay previously
+measured at ~10 MB/s. Either the rate is inflated by preallocation (each new temp adds its whole
+length to `len()` at once, spiking the derived rate while the total stays correct — the same
+mechanism, surfacing in the rate instead), or the transfer really was that fast. The total is
+right either way; the rate is shown to users as fact, so it is worth settling against wall-clock.
 
 The order they are actually met is not the order they were guessed:
 
