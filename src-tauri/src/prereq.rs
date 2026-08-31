@@ -26,7 +26,7 @@ pub struct ToolStatus {
     /// Human label.
     pub name: String,
     pub ok: bool,
-    /// Version string as the tool reports it, e.g. "lore 0.8.6+373".
+    /// Version string as the tool reports it, e.g. "lore 0.9.0+783".
     pub version: Option<String>,
     /// Present only when `ok` is false — phrased for a non-technical reader.
     pub problem: Option<String>,
