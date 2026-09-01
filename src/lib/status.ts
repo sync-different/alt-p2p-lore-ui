@@ -10,9 +10,11 @@
  * each keeping their own map is how "connected" ends up green in one place and blue in
  * another, and the user has to learn two vocabularies for one fact.
  *
- * Relay is deliberately **yellow, not blue**: the connection works, but it is slower and
- * routed through the coordinator. That is precisely "working, but degraded" — giving it a
- * colour of its own would make it a fourth thing to learn rather than a shade of caution.
+ * Relay is deliberately **yellow, not blue**: the connection works but is routed through the
+ * coordinator — a different topology with a live dependency on it, worth surfacing. That is
+ * "working, but worth noting". It is NOT a claim about speed: measured, relay has been the
+ * *faster* path on some networks (see the carrier measurements). Giving it a colour of its own
+ * would make it a fourth thing to learn rather than a shade of caution.
  */
 
 import type { NoticeLevel, SessionStatus } from "../types/app";
@@ -65,7 +67,8 @@ export const SESSION_LABEL: Record<SessionStatus, string> = {
   connected: "Connected",
   disconnected: "Not connected",
   connecting: "Connecting…",
-  // Named rather than hidden: knowing the route explains the speed difference.
-  relay: "Connected via relay — slower than a direct connection",
+  // Named rather than hidden: the route is a real dependency (the coordinator) worth surfacing —
+  // not a speed claim; relay has measured faster than the direct path on some networks.
+  relay: "Connected via relay — routed through the coordinator",
   error: "Problem",
 };
