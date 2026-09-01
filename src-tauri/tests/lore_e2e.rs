@@ -107,6 +107,28 @@ fn free_port() -> u16 {
         .port()
 }
 
+/// Two distinct free ports, both actually reserved.
+///
+/// The gRPC port used to be the only one asked for, and the HTTP port was derived as
+/// `port + 2` - a number nothing had checked. Windows hands out ephemeral ports in
+/// near-sequential runs, so `port + 2` was frequently already held (often by the previous
+/// test's server or its TIME_WAIT), and loreserver died at startup with
+///
+///     Failed to start HTTP server: Only one usage of each socket address ... (os error 10048)
+///
+/// which is WSAEADDRINUSE. That surfaced as the intermittent "scratch loreserver did not
+/// start", and was invisible because loreserver logs this to STDOUT, which the harness discards.
+///
+/// Both listeners are held open at once and dropped together, so the two ports cannot collide
+/// with each other the way two sequential `free_port()` calls could.
+fn two_free_ports() -> (u16, u16) {
+    let a = TcpListener::bind("127.0.0.1:0").unwrap();
+    let b = TcpListener::bind("127.0.0.1:0").unwrap();
+    let pa = a.local_addr().unwrap().port();
+    let pb = b.local_addr().unwrap().port();
+    (pa, pb)
+}
+
 fn wait_port(port: u16, secs: u64) -> bool {
     let deadline = Instant::now() + Duration::from_secs(secs);
     while Instant::now() < deadline {
@@ -119,7 +141,7 @@ fn wait_port(port: u16, secs: u64) -> bool {
 }
 
 fn start_server(loreserver: &Path) -> Option<Server> {
-    let port = free_port();
+    let (port, http_port) = two_free_ports();
     let dir = std::env::temp_dir().join(format!("lore-e2e-{}-{}", std::process::id(), port));
     std::fs::create_dir_all(dir.join("cfg")).ok()?;
     std::fs::create_dir_all(dir.join("store")).ok()?;
@@ -142,7 +164,7 @@ fn start_server(loreserver: &Path) -> Option<Server> {
         // this is the smallest change that is correct on both platforms.
         d = dir.display().to_string().replace('\\', "/"),
         p = port,
-        h = port.wrapping_add(2),
+        h = http_port,
     );
     std::fs::write(dir.join("cfg/local.toml"), cfg).ok()?;
     let child = spawn_loreserver(loreserver, &dir)?;
