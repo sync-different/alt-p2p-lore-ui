@@ -441,7 +441,7 @@ pub async fn push(app: AppHandle, path: String) -> Result<RepoStatus, String> {
 /// `resolve theirs` left **B** (the user's). The first shipped version passed `mine` for
 /// "keep my version", which silently **discarded the user's work while claiming to keep it** —
 /// the exact inversion this function exists to pin.
-fn resolve_side_arg(keep_user_version: bool) -> &'static str {
+pub fn resolve_side_arg(keep_user_version: bool) -> &'static str {
     if keep_user_version { "theirs" } else { "mine" }
 }
 
