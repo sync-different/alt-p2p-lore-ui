@@ -53,6 +53,24 @@ struct Server {
     child: Child,
     port: u16,
     dir: PathBuf,
+    bin: PathBuf,
+}
+
+impl Server {
+    /// Hard-crash the server (`SIGKILL`) and bring it straight back up on the same store and port —
+    /// the `kill -9` a crash or `systemctl kill -s KILL` would do. Used to prove the store stays
+    /// consistent across a crash in the write path (loreserver's durability fix).
+    fn kill_and_restart(&mut self) -> bool {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        match spawn_loreserver(&self.bin, &self.dir) {
+            Some(child) => {
+                self.child = child;
+                wait_port(self.port, 20)
+            }
+            None => false,
+        }
+    }
 }
 
 impl Drop for Server {
@@ -61,6 +79,20 @@ impl Drop for Server {
         let _ = self.child.wait();
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+/// Spawn `loreserver` against the config already written under `dir/cfg`. Shared by first start and
+/// restart so both go through exactly one code path.
+fn spawn_loreserver(bin: &Path, dir: &Path) -> Option<Child> {
+    Command::new(bin)
+        .arg("--config")
+        .arg(dir.join("cfg"))
+        .env("LORE_ENV", "local")
+        .current_dir(dir)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()
 }
 
 fn free_port() -> u16 {
@@ -89,9 +121,11 @@ fn start_server(loreserver: &Path) -> Option<Server> {
     std::fs::create_dir_all(dir.join("store")).ok()?;
     // Explicit store paths keep this instance isolated from any other server sharing the default
     // location; an ephemeral grpc/quic port lets tests run in parallel without colliding.
+    // A short flush delay lets the durability test make a write durable in ~1s instead of the 10s
+    // default, so it can crash *after* something has landed and check the store stays consistent.
     let cfg = format!(
-        "[immutable_store.local]\npath = \"{d}/store/immut\"\n\
-         [mutable_store.local]\npath = \"{d}/store/mut\"\n\
+        "[immutable_store.local]\npath = \"{d}/store/immut\"\nflush_delay_seconds = 1\n\
+         [mutable_store.local]\npath = \"{d}/store/mut\"\nflush_delay_seconds = 1\n\
          [server.grpc]\nport = {p}\n\
          [server.http]\nport = {h}\n\
          [server.quic]\nport = {p}\n",
@@ -100,16 +134,13 @@ fn start_server(loreserver: &Path) -> Option<Server> {
         h = port.wrapping_add(2),
     );
     std::fs::write(dir.join("cfg/local.toml"), cfg).ok()?;
-    let child = Command::new(loreserver)
-        .arg("--config")
-        .arg(dir.join("cfg"))
-        .env("LORE_ENV", "local")
-        .current_dir(&dir)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let server = Server { child, port, dir };
+    let child = spawn_loreserver(loreserver, &dir)?;
+    let server = Server {
+        child,
+        port,
+        dir,
+        bin: loreserver.to_path_buf(),
+    };
     wait_port(port, 20).then_some(server)
 }
 
@@ -311,5 +342,42 @@ fn diverged_local_merge_publishes_via_push() {
             .unwrap_or(""),
         "USER",
         "the pushed merge should carry the user's line to the host"
+    );
+}
+
+/// A hard crash in the write path must leave the repository **consistent and usable**, not wedged.
+/// On 0.8.6 a `kill -9` inside the flush window could advance the branch pointer past a revision it
+/// then lost, trapping the branch ("failed to load current latest state"); 0.9.0's storage fix keeps
+/// the pointer from outrunning durable data. We don't assert the last (possibly unflushed) write
+/// survives — flush timing makes that nondeterministic — only that the repo still clones and accepts
+/// a fresh push afterwards, which a trapped branch would not. (Found on Fedora during M2.5.)
+#[test]
+fn kill_9_leaves_the_repository_consistent() {
+    let Some(mut h) = Harness::start() else { return };
+    let wc = h.seed_repo("durability", "d.txt", "seed\n");
+    // Let the seed become durable (flush_delay is 1s here) so the crash below can't simply lose the
+    // whole store — the point is consistency of what *did* land, not that nothing is ever lost.
+    std::thread::sleep(Duration::from_secs(2));
+
+    // A second write pushed right before the crash — it may or may not have flushed; either way the
+    // repo must not end up with its branch pointing at a revision whose data is gone.
+    std::fs::write(wc.join("d.txt"), "seed\nsecond\n").unwrap();
+    h.commit_all(&wc, "second");
+    h.ok(&wc, &["push"]);
+
+    assert!(
+        h.server.kill_and_restart(),
+        "server must come back up after kill -9"
+    );
+
+    // Consistent + usable: a clone succeeds and a follow-up push is accepted. A branch trapped by the
+    // old durability hole would reject the push with a "current latest state" error.
+    let v = h.clone("durability", "durability-verify");
+    std::fs::write(v.join("d.txt"), "post-crash\n").unwrap();
+    h.commit_all(&v, "post-crash");
+    let (pushed, out) = h.run(&v, &["push"]);
+    assert!(
+        pushed,
+        "after kill -9 the repo must stay usable — a follow-up push should succeed, not hit a trapped branch:\n{out}"
     );
 }
