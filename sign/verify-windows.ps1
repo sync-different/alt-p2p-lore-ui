@@ -23,8 +23,21 @@ $ErrorActionPreference = "Stop"
 
 $repo = Split-Path -Parent $PSScriptRoot
 $rel  = Join-Path $repo "src-tauri\target\release"
-$msi  = Get-ChildItem (Join-Path $rel "bundle\msi")  -Filter *.msi -ErrorAction SilentlyContinue | Select-Object -First 1
-$nsis = Get-ChildItem (Join-Path $rel "bundle\nsis") -Filter *setup.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+# NEWEST, not first-by-name. Old bundles are not cleaned out, so bundle\msi can hold both
+# "alt-lore Desktop_0.1.0_...msi" and "..._0.2.0_...msi" - and 0.1.0 sorts FIRST. Selecting by
+# name silently verified a stale August build and reported ALL SIGNED AND VALID for artifacts
+# nobody was shipping. Sorting by LastWriteTime, and printing the file actually checked, is what
+# makes this script answer the question it claims to.
+$msi  = Get-ChildItem (Join-Path $rel "bundle\msi")  -Filter *.msi       -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+$nsis = Get-ChildItem (Join-Path $rel "bundle\nsis") -Filter *setup.exe  -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+$allMsi = @(Get-ChildItem (Join-Path $rel "bundle\msi") -Filter *.msi -ErrorAction SilentlyContinue)
+if ($allMsi.Count -gt 1) {
+  Write-Output ("NOTE: {0} installers present in bundle\msi; verifying the NEWEST only." -f $allMsi.Count)
+  foreach ($f in ($allMsi | Sort-Object LastWriteTime -Descending)) {
+    Write-Output ("      {0}  {1}" -f $f.LastWriteTime.ToString("yyyy-MM-dd HH:mm"), $f.Name)
+  }
+  Write-Output ""
+}
 
 $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
   Where-Object { $_.FullName -match '\\x64\\' } | Sort-Object FullName -Descending | Select-Object -First 1
@@ -43,6 +56,8 @@ function Show($label, $path) {
 }
 
 Write-Output "=== installers ==="
+if ($msi)  { Write-Output ("  checking MSI : " + $msi.Name) }
+if ($nsis) { Write-Output ("  checking NSIS: " + $nsis.Name) }
 Show "MSI"         $(if ($msi)  { $msi.FullName })
 Show "NSIS setup"  $(if ($nsis) { $nsis.FullName })
 
