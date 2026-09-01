@@ -129,7 +129,14 @@ fn start_server(loreserver: &Path) -> Option<Server> {
          [server.grpc]\nport = {p}\n\
          [server.http]\nport = {h}\n\
          [server.quic]\nport = {p}\n",
-        d = dir.display(),
+        // Forward slashes, always. `dir.display()` on Windows yields `C:\Users\...`, and that is
+        // interpolated into a TOML **basic** string, where a backslash opens an escape: `\U`
+        // means `\UXXXXXXXX`, so `\Users` is a parse error and loreserver exits before it ever
+        // listens. The harness then prints only "scratch loreserver did not start" and all five
+        // tests SKIP while counting as passed - the exact false green this file warns about, but
+        // from a different cause than the env vars. Windows accepts forward slashes in paths, so
+        // this is the smallest change that is correct on both platforms.
+        d = dir.display().to_string().replace('\\', "/"),
         p = port,
         h = port.wrapping_add(2),
     );
