@@ -84,13 +84,17 @@ impl Drop for Server {
 /// Spawn `loreserver` against the config already written under `dir/cfg`. Shared by first start and
 /// restart so both go through exactly one code path.
 fn spawn_loreserver(bin: &Path, dir: &Path) -> Option<Child> {
+    // Capture stderr to a log file instead of discarding it (#131). When the server fails to start —
+    // e.g. it rejects its own config — start_server reads this to say WHY, rather than a blind
+    // "did not start". Discarding it is exactly what hid the Windows TOML-escape bug.
+    let errlog = std::fs::File::create(dir.join("loreserver.log")).ok();
     Command::new(bin)
         .arg("--config")
         .arg(dir.join("cfg"))
         .env("LORE_ENV", "local")
         .current_dir(dir)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(errlog.map(Stdio::from).unwrap_or_else(Stdio::null))
         .spawn()
         .ok()
 }
@@ -148,7 +152,20 @@ fn start_server(loreserver: &Path) -> Option<Server> {
         dir,
         bin: loreserver.to_path_buf(),
     };
-    wait_port(port, 20).then_some(server)
+    if wait_port(port, 20) {
+        Some(server)
+    } else {
+        // The binary exists but never listened — a REAL failure. Print its stderr so the cause is
+        // visible (read before `server` drops and removes the temp dir), then return None; the
+        // caller turns this into a panic, not a silent skip (#131).
+        let log = std::fs::read_to_string(server.dir.join("loreserver.log")).unwrap_or_default();
+        eprintln!(
+            "lore_e2e: scratch loreserver did not start on port {port}.\n\
+             --- loreserver stderr ---\n{}\n-------------------------",
+            log.trim()
+        );
+        None
+    }
 }
 
 // ---- harness ----------------------------------------------------------------------------------
@@ -163,8 +180,10 @@ struct Harness {
 }
 
 impl Harness {
-    /// `Some` when the binaries exist and the server came up; `None` (with a printed reason) when
-    /// the environment can't run these — the caller returns early so the test counts as passed.
+    /// `Some` when the binaries exist and the server came up. `None` ONLY when a binary is absent —
+    /// a legitimate environment skip, and the caller returns early (test counts as passed). If the
+    /// binaries ARE present but the scratch server fails to start, that is a real bug, so we panic
+    /// (fail the test) rather than skip — otherwise a broken server reads as "5 passed" (#131).
     fn start() -> Option<Harness> {
         let guard = test_lock();
         let lore = match find_bin("ALT_LORE_TEST_LORE", "lore") {
@@ -181,13 +200,11 @@ impl Harness {
                 return None;
             }
         };
-        let server = match start_server(&loreserver) {
-            Some(s) => s,
-            None => {
-                eprintln!("SKIP lore_e2e: scratch loreserver did not start");
-                return None;
-            }
-        };
+        // Binaries are present, so the scratch server MUST start — a failure here is a real bug, not
+        // a skip. Panic (fail the test) with the cause printed above, instead of silently passing.
+        let server = start_server(&loreserver).unwrap_or_else(|| panic!(
+            "lore_e2e: loreserver was found but the scratch server failed to start — a real failure, \
+             not a skippable environment gap (its stderr is printed above)."));
         let work = server.dir.join("work");
         std::fs::create_dir_all(&work).unwrap();
         Some(Harness {
