@@ -84,27 +84,23 @@ impl Drop for Server {
 /// Spawn `loreserver` against the config already written under `dir/cfg`. Shared by first start and
 /// restart so both go through exactly one code path.
 fn spawn_loreserver(bin: &Path, dir: &Path) -> Option<Child> {
-    // Capture stderr to a log file instead of discarding it (#131). When the server fails to start —
-    // e.g. it rejects its own config — start_server reads this to say WHY, rather than a blind
-    // "did not start". Discarding it is exactly what hid the Windows TOML-escape bug.
-    let errlog = std::fs::File::create(dir.join("loreserver.log")).ok();
+    // Capture BOTH stdout and stderr to one log file (#131). loreserver logs some fatal errors to
+    // stdout (the port-in-use error) and others to stderr (a bad config), so capturing only one leaves
+    // the log empty in exactly the case it exists to explain. Two handles to the same file merge them.
+    let log = std::fs::File::create(dir.join("loreserver.log")).ok();
+    let (out, err) = match log.as_ref().and_then(|f| f.try_clone().ok()) {
+        Some(clone) => (Stdio::from(log.unwrap()), Stdio::from(clone)),
+        None => (Stdio::null(), Stdio::null()),
+    };
     Command::new(bin)
         .arg("--config")
         .arg(dir.join("cfg"))
         .env("LORE_ENV", "local")
         .current_dir(dir)
-        .stdout(Stdio::null())
-        .stderr(errlog.map(Stdio::from).unwrap_or_else(Stdio::null))
+        .stdout(out)
+        .stderr(err)
         .spawn()
         .ok()
-}
-
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
 }
 
 /// Two distinct free ports, both actually reserved.
@@ -183,7 +179,7 @@ fn start_server(loreserver: &Path) -> Option<Server> {
         let log = std::fs::read_to_string(server.dir.join("loreserver.log")).unwrap_or_default();
         eprintln!(
             "lore_e2e: scratch loreserver did not start on port {port}.\n\
-             --- loreserver stderr ---\n{}\n-------------------------",
+             --- loreserver output (stdout+stderr) ---\n{}\n-------------------------",
             log.trim()
         );
         None
