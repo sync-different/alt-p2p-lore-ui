@@ -71,8 +71,10 @@ fn measure(root: &Path) -> (u64, u64) {
                     // Written blocks, not declared length: sync writes incoming files as
                     // preallocated sparse `.~loretemp` exactly as clone does, so summing `len()`
                     // would snap the counter to the full delta size the instant the files appear
-                    // and hold there. See `on_disk_bytes`.
-                    *bytes += on_disk_bytes(&m);
+                    // and hold there. See `on_disk_bytes` — which needs the *name*, because on
+                    // Windows the only way to tell a preallocated file from a finished one is
+                    // the suffix.
+                    *bytes += on_disk_bytes(&name, &m);
                     if name.ends_with(TEMP_SUFFIX) {
                         *temps += 1;
                     }
@@ -96,18 +98,42 @@ fn measure(root: &Path) -> (u64, u64) {
 /// 8.9 GB shown against 1.1 GB on disk). `blocks() * 512` is what `du` reports — read directly,
 /// not by shelling out — so it is accurate and identical on Linux and macOS.
 ///
-/// Windows has no `st_blocks`, so it falls back to `len()`. That is correct as long as lore's
-/// preallocation reserves the clusters (normal NTFS `SetEndOfFile`); if it marks the files
-/// sparse there, this would over-count as `len()` did on Unix — `GetCompressedFileSizeW` would
-/// be the fix. Unverified on Windows.
+/// **Windows measures this differently, and less well.** Verified 2026-09-01, against the
+/// earlier note here — which had the reasoning backwards and was marked "unverified":
+///
+/// - NTFS `SetEndOfFile` preallocation **reserves the clusters**, and the files are *not*
+///   sparse (`fsutil sparse queryflag`, against a control). Reserving is what *causes* the
+///   over-count, not what makes `len()` safe: every size field — `len()`, allocation size,
+///   `GetCompressedFileSizeW` — reports the final size the instant the file is created.
+/// - The one field that tracks what has really landed is **ValidDataLength**. Measured on a
+///   preallocated 100 MB file: `len()` 104,857,600 throughout, VDL `0x0` before writing and
+///   `0xa00000` after writing 10 MB. Exactly the signal wanted.
+/// - But it is **not reachable**. `NtQueryInformationFile` was probed for every information
+///   class 1..140, with read and read/write handles: several expose the *length*, none exposes
+///   VDL. `fsutil file queryValidData` gets it by some privileged or undocumented route, and
+///   shelling out per file — thousands of them, every 800 ms — is not viable.
+///
+/// So on Windows a `.~loretemp` is credited **zero** until it is renamed into place. That
+/// under-reports by whatever is in flight, which is not small (measured: a 2 GB clone held
+/// 255 temps totalling 1,475 MB, 72% of the tree). It is still the better failure: the count
+/// only ever lags the truth, rises monotonically and ends exact, whereas summing `len()` put
+/// the bar at 97% after 62 s of a 131 s clone and then held it there for the rest — which is
+/// what a user actually reported. Prefer a slow honest number to a fast wrong one.
+///
+/// If a supported way to read ValidDataLength appears, this is the place to use it, and the
+/// under-report goes away.
 #[cfg(unix)]
-pub(super) fn on_disk_bytes(m: &std::fs::Metadata) -> u64 {
+pub(super) fn on_disk_bytes(_name: &str, m: &std::fs::Metadata) -> u64 {
     use std::os::unix::fs::MetadataExt;
     m.blocks() * 512
 }
 #[cfg(not(unix))]
-pub(super) fn on_disk_bytes(m: &std::fs::Metadata) -> u64 {
-    m.len()
+pub(super) fn on_disk_bytes(name: &str, m: &std::fs::Metadata) -> u64 {
+    if name.ends_with(TEMP_SUFFIX) {
+        0
+    } else {
+        m.len()
+    }
 }
 
 /// A running progress monitor. From `start()` it emits an `operation://progress` event

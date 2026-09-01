@@ -217,9 +217,11 @@ fn worktree_bytes(dest: &std::path::Path) -> u64 {
     fn walk(dir: &std::path::Path, total: &mut u64) {
         let Ok(entries) = std::fs::read_dir(dir) else { return };
         for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
             match entry.metadata() {
                 Ok(m) if m.is_dir() => walk(&entry.path(), total),
-                Ok(m) => *total += super::progress::on_disk_bytes(&m),
+                Ok(m) => *total += super::progress::on_disk_bytes(&name, &m),
                 Err(_) => {}
             }
         }
@@ -227,15 +229,17 @@ fn worktree_bytes(dest: &std::path::Path) -> u64 {
     let Ok(entries) = std::fs::read_dir(dest) else { return 0 };
     let mut total = 0;
     for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
         match entry.metadata() {
             Ok(m) if m.is_dir() => {
                 // Skip the fragment/metadata store; it is not the data the user is receiving,
                 // and on a shared-store clone it would double-count against the working tree.
-                if entry.file_name() != ".lore" {
+                if name != ".lore" {
                     walk(&entry.path(), &mut total);
                 }
             }
-            Ok(m) => total += super::progress::on_disk_bytes(&m),
+            Ok(m) => total += super::progress::on_disk_bytes(&name, &m),
             Err(_) => {}
         }
     }
@@ -672,21 +676,26 @@ fn which_on_path(name: &str) -> Option<std::path::PathBuf> {
 mod tests {
     use super::percent_of;
 
-    #[cfg(unix)]
     #[test]
     fn worktree_counts_written_blocks_not_preallocated_length() {
         // The b12 clone bug, pinned: lore preallocates each incoming file to its final size as
-        // a sparse `.~loretemp`, so `len()` reports the full size while almost nothing is
-        // written. Summing `len()` snapped the progress counter to the repo's total the instant
-        // the files appeared (8.9 GB shown against 1.1 GB on disk). `worktree_bytes` must count
-        // the blocks actually written instead.
+        // a `.~loretemp`, so `len()` reports the full size while almost nothing is written.
+        // Summing `len()` snapped the progress counter to the repo's total the instant the
+        // files appeared (8.9 GB shown against 1.1 GB on disk).
+        //
+        // This test was `#[cfg(unix)]` until 2026-09-01, which is precisely why the bug
+        // survived on Windows: the assertion that pins the behaviour was excluded from the one
+        // platform whose implementation was wrong, so a green suite meant nothing there. It now
+        // runs everywhere. The two platforms satisfy it differently — Unix counts written
+        // blocks, Windows credits a temp zero because ValidDataLength is unreachable (see
+        // `on_disk_bytes`) — and the point of the test is the *property*, not the mechanism.
         use std::io::Write;
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("bigfiles")).unwrap();
         let path = root.join("bigfiles/x.bin.~loretemp");
         let f = std::fs::File::create(&path).unwrap();
-        f.set_len(200 * 1024 * 1024).unwrap(); // 200 MB logical, sparse
+        f.set_len(200 * 1024 * 1024).unwrap(); // 200 MB logical, barely any of it written
         drop(f);
         // Write only a little real data.
         let mut w = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
@@ -694,10 +703,24 @@ mod tests {
         w.flush().unwrap();
         drop(w);
 
+        // A file already renamed into place — complete, and its full length must still count.
+        // Without this half, "credit temps zero" would pass by counting nothing at all, which
+        // is the opposite failure and just as wrong.
+        const DONE_LEN: u64 = 3 * 1024 * 1024;
+        let done = root.join("bigfiles/done.bin");
+        let mut w = std::fs::File::create(&done).unwrap();
+        w.write_all(&vec![9u8; DONE_LEN as usize]).unwrap();
+        w.flush().unwrap();
+        drop(w);
+
         let bytes = super::worktree_bytes(root);
         assert!(
             bytes < 8 * 1024 * 1024,
-            "counted {bytes} bytes — expected the written blocks (~KB), not the 200 MB preallocation"
+            "counted {bytes} bytes — expected the written data (~MB), not the 200 MB preallocation"
+        );
+        assert!(
+            bytes >= DONE_LEN,
+            "counted {bytes} bytes — a completed file of {DONE_LEN} bytes must still be counted"
         );
     }
 

@@ -318,36 +318,71 @@ This repository now has a remote (`sync-different/alt-p2p-lore-ui`), added to ge
 second machine. Note that a clone does **not** bring `internal/` (git-ignored plans) — copy that
 across separately, or work without it; nothing in the build depends on it.
 
-**Windows builds and runs.** `msi` and `nsis` bundles, both suites green — currently **246 Rust
-(zero warnings), 376 vitest / 30 files**, the vitest count identical to macOS. The port itself
+**Windows builds and runs.** `msi` and `nsis` bundles, both suites green — currently **252 Rust
+(zero warnings), 380 vitest / 30 files**, the vitest count identical to macOS. The port itself
 changed no test and no parser: it reached macOS's counts on the Cargo.toml fix alone, and every
 extra test since came with a bug found by *running* the thing. What follows replaces the earlier
 list of predictions; where a prediction was wrong, the correction is the interesting part.
 
-### The sparse-file question: `len()` is fine, and I got this wrong first
+### The sparse-file question: `len()` over-counts on Windows, and the first two answers here were wrong
 
-`on_disk_bytes` uses `blocks() * 512` on Unix and falls back to `len()` on Windows, with a note
-fearing that lore's sparse `.~loretemp` preallocation would make the counter snap to the total.
-**Measured, it does not, and no `GetCompressedFileSizeW` is needed.**
+`on_disk_bytes` uses `blocks() * 512` on Unix and *used to* fall back to `len()` on Windows. That
+fallback was wrong and this section said it was fine. Both corrected 2026-09-01: a `.~loretemp` is
+now credited **zero** on Windows until it is renamed into place.
 
-- lore's `.~loretemp` files on NTFS are **not sparse** (`fsutil sparse queryflag`, against a
-  control that confirms detection works).
-- lore *does* preallocate each one to its final size — a partial file from a killed clone was
-  byte-identical in length to the completed one, with `ValidDataLength` **0**.
-- But the over-count is bounded by the **in-flight working set**, not the tree: lore preallocates
-  a few files, fills them, renames, moves on. A live 2.1 GiB clone over the tunnel showed the
-  counter climbing normally and finishing correct.
+Measured on a 2 GB clone, sampling the destination tree every 5s:
 
-**The mistake worth recording:** from the killed-clone leftovers I concluded the counter would
-snap, and said so confidently. What I had actually found was a snapshot of the *in-flight set at
-the moment I killed it* — I read a working set as steady state. The prediction was wrong and the
-live clone disproved it.
+| t | counter said | actually finalised | in `.~loretemp` |
+|---|---|---|---|
+| 20.1s | 1,139.2 MB | **9.9 MB** | 1,129.3 MB (99%) |
+| 62.1s | 1,991.4 MB (**97.4%**) | 516.4 MB | 1,475.0 MB (74%) |
+| 121.6s | 2,045.7 MB | 2,045.7 MB | 0 |
 
-One thing still unverified: the app reported **75 MB/s** on that clone, over a relay previously
-measured at ~10 MB/s. Either the rate is inflated by preallocation (each new temp adds its whole
-length to `len()` at once, spiking the derived rate while the total stays correct — the same
-mechanism, surfacing in the rate instead), or the transfer really was that fast. The total is
-right either way; the rate is shown to users as fact, so it is worth settling against wall-clock.
+- **The over-count is not bounded by a small working set.** It peaked at **255 concurrent temp files
+  totalling 1,475 MB — 72% of the whole tree.** "A few files, fills them, renames, moves on"
+  understated it by two orders of magnitude.
+- **The user-visible symptom is the progress bar**, which clone drives from this counter
+  (`clone.rs`: bytes, rate *and* percent, deliberately overriding lore's own bar). It reached 97%
+  after 62s of a 131s clone and then sat there — reported by a human mid-clone, at the moment the
+  counter crossed 97.4%.
+- **`GetCompressedFileSizeW` is not the fix**, nor is any other size field. NTFS `SetEndOfFile`
+  preallocation *reserves* the clusters and the files are **not sparse**, so `len()`, allocation size
+  and compressed size all report the final size the instant the file appears. The old note had this
+  backwards: reserving the clusters is what *causes* the over-count, not what makes `len()` safe.
+- **`ValidDataLength` is the right signal and is not reachable.** It tracks exactly what is wanted —
+  on a preallocated 100 MB file, `len()` stays 104,857,600 while VDL goes `0x0` → `0xa00000` after
+  writing 10 MB. But `NtQueryInformationFile` was probed for **every information class 1..140**, with
+  read and read/write handles: several expose the *length*, none exposes VDL. `fsutil file
+  queryValidData` reaches it by some privileged or undocumented route, and shelling out per file —
+  thousands of them, every 800ms — is not viable. If a supported way appears, `on_disk_bytes` is the
+  one place to use it and the under-report disappears.
+
+So Windows credits a temp zero. That **under**-reports by whatever is in flight, which is not small —
+but the count then only ever lags the truth, rises monotonically and ends exact, instead of racing
+ahead and stalling. Prefer a slow honest number to a fast wrong one.
+
+**Two mistakes worth recording, because they are the same mistake twice.** The original note predicted
+the counter would snap, reasoning from killed-clone leftovers, and was then talked out of it by a live
+clone that "climbed normally and finished correct". But that clone was only ever watched at its
+**ends**, and the fault is entirely in the **middle** — a total that finishes correct says nothing
+about the path it took there. The correction then over-swung and declared the matter settled, which is
+how "unverified" became "measured, it does not". Both readings came from too few samples in time; 5s
+sampling is what actually answered it.
+
+**The test existed, and was excluded from the platform that needed it.**
+`worktree_counts_written_blocks_not_preallocated_length` was written for the original Unix bug and
+marked `#[cfg(unix)]`, so it never ran on the one platform whose implementation was wrong — a green
+Windows suite meant nothing here. It now runs everywhere and asserts *both* halves: a preallocated
+temp must not be counted at full length, **and** a completed file must still be counted — without the
+second, "credit temps zero" passes by counting nothing at all, which is the opposite failure and just
+as wrong.
+
+On the **75 MB/s** that this section previously left open: the mechanism is real — a counter derived
+from `len()` spikes hard, and the same 5s sampling produced derived rates of 223 MB/s and 140 MB/s
+against a true average of ~19.5 MB/s, then 0.00 MB/s for ~50s while the transfer was still running.
+The specific 75 MB/s figure was never reproduced, though: on a re-measured 2 GB clone the app showed
+~23 MB/s against a true ~19.5 MB/s. Note the total is right either way, and an end-of-run average
+looks sane precisely because the total ends correct — which is what made this hard to see.
 
 The order they are actually met is not the order they were guessed:
 
