@@ -44,6 +44,9 @@ pub struct TunnelConfig {
     /// ctone's own hosts fall back routinely.
     #[serde(default = "default_true")]
     pub allow_relay: bool,
+    /// Skip the punch and go straight to the relay. See `session::Session::force_relay`.
+    #[serde(default)]
+    pub force_relay: bool,
 }
 
 fn default_true() -> bool {
@@ -173,6 +176,26 @@ fn emit(app: &AppHandle, update: TunnelUpdate) {
     );
 }
 
+/// Which relay flag this tunnel gets, if any.
+///
+/// Extracted from `start_tunnel` purely so it can be tested: it is one line that decides the
+/// carrier, and `start_tunnel` needs an `AppHandle`, so where it stood no test could reach it.
+///
+/// **`--force-relay` is passed alone, never alongside `--allow-relay`.** The jar sets
+/// `allowRelay = true` (and pins `relayMode` to tcp) whenever `forceRelay` is set — read in
+/// `PeerConnection`'s option handling rather than inferred from the flag names — so sending both
+/// would be redundant rather than additive, and sending `--allow-relay` while meaning "force"
+/// would silently give a direct connection instead.
+fn relay_flag(config: &TunnelConfig) -> Option<&'static str> {
+    if config.force_relay {
+        Some("--force-relay")
+    } else if config.allow_relay {
+        Some("--allow-relay")
+    } else {
+        None
+    }
+}
+
 /// Start a tunnel. Returns its id immediately — connection happens asynchronously, and the
 /// UI follows it through `tunnel://update`.
 #[tauri::command]
@@ -261,8 +284,8 @@ pub async fn start_tunnel(app: AppHandle, config: TunnelConfig) -> Result<String
         args.push("--identity-port".into());
         args.push(p.to_string());
     }
-    if config.allow_relay {
-        args.push("--allow-relay".into());
+    if let Some(flag) = relay_flag(&config) {
+        args.push(flag.into());
     }
 
     // Logged redacted, always. A secret only has to be printed once to be leaked.
@@ -673,7 +696,45 @@ pub fn stop_tunnel(app: AppHandle, id: String) -> Result<bool, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::friendly_error;
+    use super::{friendly_error, relay_flag, TunnelConfig};
+
+    fn cfg(allow_relay: bool, force_relay: bool) -> TunnelConfig {
+        TunnelConfig {
+            session_name: "n".into(),
+            session_id: "s".into(),
+            psk: "k".into(),
+            server: "h:1".into(),
+            loreserver_port: 41400,
+            identity_port: None,
+            allow_relay,
+            force_relay,
+        }
+    }
+
+    #[test]
+    fn force_relay_is_passed_alone_never_alongside_allow() {
+        // The jar sets allowRelay itself when forceRelay is set, so passing both is redundant.
+        // Asserted because "push both to be safe" is the obvious wrong instinct here.
+        assert_eq!(relay_flag(&cfg(true, true)), Some("--force-relay"));
+    }
+
+    #[test]
+    fn force_relay_wins_over_a_cleared_allow_relay() {
+        // The UI cannot produce this pair — it disables the allow box when force is on — but a
+        // hand-edited config can, and "force, but relay not allowed" must not silently become a
+        // direct connection, which is the exact carrier the user asked to avoid.
+        assert_eq!(relay_flag(&cfg(false, true)), Some("--force-relay"));
+    }
+
+    #[test]
+    fn allow_relay_alone_is_unchanged_by_the_new_option() {
+        assert_eq!(relay_flag(&cfg(true, false)), Some("--allow-relay"));
+    }
+
+    #[test]
+    fn neither_flag_when_both_are_off() {
+        assert_eq!(relay_flag(&cfg(false, false)), None);
+    }
 
     #[test]
     fn explains_a_rejected_key() {

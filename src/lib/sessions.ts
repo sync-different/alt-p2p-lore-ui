@@ -21,6 +21,13 @@ export interface SessionConfig {
   /** Fixed by the host's advertised auth_url; null when no sign-in is needed. */
   identity_port: number | null;
   allow_relay: boolean;
+  /**
+   * Skip hole punching and go straight to the relay. Optional, defaulting to false, so a host
+   * saved before this existed keeps its behaviour. Distinct from `allow_relay`, which permits a
+   * fallback only *after* a punch fails — a punch can succeed and still yield a carrier that
+   * passes no traffic, and there is no fallback from a success.
+   */
+  force_relay?: boolean;
   /** Defaults to "p2p" for configurations written before direct hosts existed. */
   kind?: HostKind;
   /** Direct hosts only: where the loreserver is. P2P derives it from the forwarded port. */

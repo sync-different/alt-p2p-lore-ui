@@ -63,6 +63,7 @@ export interface TunnelConfig {
   loreserver_port: number;
   identity_port: number | null;
   allow_relay: boolean;
+  force_relay?: boolean;
 }
 
 /** Map a tunnel phase onto the shared session colour vocabulary. */

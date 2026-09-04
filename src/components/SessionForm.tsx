@@ -39,6 +39,7 @@ export function SessionForm({
     existing?.identity_port != null ? String(existing.identity_port) : "",
   );
   const [allowRelay, setAllowRelay] = useState(existing?.allow_relay ?? true);
+  const [forceRelay, setForceRelay] = useState(existing?.force_relay ?? false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   // Two clicks, not a modal-on-a-modal: deleting is reversible only by retyping the details,
@@ -82,6 +83,7 @@ export function SessionForm({
       loreserver_port: Number(lorePort) || DEFAULT_LORESERVER_PORT,
       identity_port: identityPort.trim() ? Number(identityPort) : null,
       allow_relay: allowRelay,
+      force_relay: forceRelay,
       base_url: kind === "direct" ? baseUrl.trim() : null,
       auth_url: kind === "direct" ? (directAuthUrl.trim() || null) : null,
     };
@@ -232,9 +234,29 @@ export function SessionForm({
           </div>
 
           <label className="flex items-center gap-2 text-ink-1">
-            <input type="checkbox" checked={allowRelay} onChange={(e) => setAllowRelay(e.target.checked)} />
-            Allow relay if a direct connection is not possible
+            <input
+              type="checkbox"
+              checked={allowRelay || forceRelay}
+              disabled={forceRelay}
+              onChange={(e) => setAllowRelay(e.target.checked)}
+            />
+            <span className={forceRelay ? "text-ink-2" : undefined}>
+              Allow relay if a direct connection is not possible
+            </span>
           </label>
+
+          <label className="mt-2 flex items-center gap-2 text-ink-1">
+            <input type="checkbox" checked={forceRelay} onChange={(e) => setForceRelay(e.target.checked)} />
+            Always use the relay (skip trying a direct connection)
+          </label>
+          {/* Why this exists at all: "allow" is a fallback after a punch FAILS, and a punch can
+              succeed while handing back a carrier that passes no traffic — there is no fallback
+              from a success. Without this the only way out was unplugging the machine. */}
+          <p className="mt-1 text-[11px] text-ink-2">
+            {forceRelay
+              ? "Relay is implied, so the option above no longer applies."
+              : "Slower in principle, but it skips hole punching entirely — useful when a direct connection is made and then carries nothing."}
+          </p>
           </>
           )}
         </div>

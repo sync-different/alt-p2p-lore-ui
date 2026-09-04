@@ -52,6 +52,17 @@ pub struct SessionConfig {
     #[serde(default = "default_true")]
     pub allow_relay: bool,
 
+    /// Skip hole punching entirely and go straight to the relay. Defaults to `false`, so a
+    /// configuration written before this existed keeps its behaviour without a migration.
+    ///
+    /// Distinct from `allow_relay`, which only permits a *fallback* after a punch fails. That
+    /// distinction matters because a punch can succeed and still hand back a carrier that
+    /// carries nothing — a peer advertising an unroutable LAN address produced exactly that
+    /// (#141), and because the punch had "succeeded" there was no fallback to take. The only
+    /// way to reach the relay was to physically unplug the peer from the network.
+    #[serde(default)]
+    pub force_relay: bool,
+
     /// Defaults to `P2p`, so configurations written before direct hosts existed keep working
     /// without a migration step that could lose the one file that cannot be reconstructed.
     #[serde(default)]
@@ -232,6 +243,7 @@ pub async fn connect_session(
             loreserver_port: session.loreserver_port,
             identity_port: session.identity_port,
             allow_relay: session.allow_relay,
+            force_relay: session.force_relay,
         },
     )
     .await
@@ -252,6 +264,7 @@ mod tests {
             loreserver_port: 41400,
             identity_port: Some(9443),
             allow_relay: true,
+            force_relay: false,
             kind: HostKind::P2p,
             base_url: None,
             auth_url: None,
@@ -341,6 +354,7 @@ mod tests {
             loreserver_port: 41400,
             identity_port: Some(9443),
             allow_relay: true,
+            force_relay: false,
             kind: HostKind::P2p,
             base_url: None,
             auth_url: None,
@@ -350,6 +364,19 @@ mod tests {
         // struct has no field for it.
         assert!(!text.contains("psk"), "config must carry no key: {text}");
         assert_eq!(serde_json::from_str::<SessionConfig>(&text).unwrap(), s);
+    }
+
+    #[test]
+    fn force_relay_defaults_off_for_a_config_written_before_the_field_existed() {
+        // The OPPOSITE default to allow_relay, deliberately. Defaulting it on would silently
+        // route every already-saved host through the relay — changing the carrier of every
+        // session anyone had configured, without them asking for it.
+        let s: SessionConfig = serde_json::from_str(
+            r#"{"id":"s1","name":"n","session_id":"x","server":"h:1","loreserver_port":41400,"identity_port":null}"#,
+        )
+        .unwrap();
+        assert!(!s.force_relay);
+        assert!(s.allow_relay, "the two defaults must not be confused for one another");
     }
 
     #[test]
